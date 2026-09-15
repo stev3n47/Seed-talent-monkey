@@ -1,0 +1,4 @@
+*.har
+seed_sniff_*.json
+seed_incident_*.json
+*.log

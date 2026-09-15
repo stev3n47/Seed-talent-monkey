@@ -1,0 +1,2654 @@
+// ==UserScript==
+// @name         Seed Talent Auto-Advancer & OpenRouter Solver
+// @namespace    http://tampermonkey.net/
+// @version      9.06
+// @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button.
+// @match        *://*.seedtalent.com/*
+// @match        *://*.coassemble.com/*
+// @match        *://d1b20t6ufgwz51.cloudfront.net/*
+// @match        *://*.articulate.com/*
+// @run-at       document-start
+// @allFrames    true
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
+
+    function getOpenRouterApiKey() {
+        return String(GM_getValue(OPENROUTER_KEY_STORAGE, '') || '').trim();
+    }
+    const AUTO_SUBMIT_QUIZ = true;
+    const MODELS = [{ id: "nvidia/nemotron-3-super-120b-a12b:free", maxTok: 800 }];
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    // At document-start, <body> may not exist yet — defer DOM work until it does.
+    function whenBodyReady(fn) {
+        if (document.body) return fn();
+        const t = setInterval(() => { if (document.body) { clearInterval(t); fn(); } }, 50);
+    }
+
+    // SCORM 2004 + 1.2 completion payload, injected into page context.
+    // v9 fixes: progress_measure is 0..1 in SCORM 2004 (old "100" was rejected by
+    // the data model), the API lookup walks the whole frame tree instead of just
+    // window/parent/top, and every declared objective (cmi.objectives.N) is marked
+    // complete — objectives are what per-section/lesson status usually reads from.
+    const SCORM_COMPLETE_PAYLOAD = `(function () {
+        try {
+            function findApi(root) {
+                const seen = new Set(), stack = [root];
+                while (stack.length) {
+                    const w = stack.pop();
+                    if (!w || seen.has(w)) continue;
+                    seen.add(w);
+                    try {
+                        if (w.API_1484_11 || w.API) return w;
+                        if (w.parent && w.parent !== w) stack.push(w.parent);
+                        for (let i = 0; i < w.frames.length; i++) stack.push(w.frames[i]);
+                    } catch(e) {}
+                }
+                return null;
+            }
+            function applyCompletion() {
+                const w = findApi(window);
+                if (!w) return false;
+                let applied = false;
+
+                const api2004 = w.API_1484_11;
+                if (api2004 && typeof api2004.SetValue === 'function') {
+                    api2004.SetValue("cmi.completion_status", "completed");
+                    api2004.SetValue("cmi.success_status", "passed");
+                    api2004.SetValue("cmi.progress_measure", "1");
+                    api2004.SetValue("cmi.score.scaled", "1");
+                    api2004.SetValue("cmi.score.raw", "100");
+                    api2004.SetValue("cmi.score.min", "0");
+                    api2004.SetValue("cmi.score.max", "100");
+                    try {
+                        const n = parseInt(api2004.GetValue("cmi.objectives._count"), 10) || 0;
+                        for (let i = 0; i < n; i++) {
+                            api2004.SetValue("cmi.objectives." + i + ".completion_status", "completed");
+                            api2004.SetValue("cmi.objectives." + i + ".success_status", "passed");
+                            api2004.SetValue("cmi.objectives." + i + ".score.scaled", "1");
+                        }
+                    } catch(e) {}
+                    api2004.SetValue("cmi.exit", "normal");
+                    api2004.Commit("");
+                    applied = true;
+                }
+
+                const api12 = w.API;
+                if (api12 && typeof api12.LMSSetValue === 'function') {
+                    api12.LMSSetValue("cmi.core.lesson_status", "completed");
+                    api12.LMSSetValue("cmi.core.score.raw", "100");
+                    api12.LMSSetValue("cmi.core.score.min", "0");
+                    api12.LMSSetValue("cmi.core.score.max", "100");
+                    api12.LMSCommit("");
+                    applied = true;
+                }
+                return applied;
+            }
+
+            let attempts = 0;
+            (function retryUntilReady() {
+                if (applyCompletion()) return;
+                attempts++;
+                if (attempts < 40) setTimeout(retryUntilReady, 250);
+            })();
+        } catch(e) {}
+    })();`;
+
+    // =========================================================
+    // 1. PANEL — top window only
+    //    States: STOPPED (default) → RUNNING → PAUSED → RUNNING
+    //                                         └→ STOPPED (stop btn)
+    // =========================================================
+    // 'stopped' | 'running' | 'paused'
+    let state = 'stopped';
+    // Sniffer state lives here (section 13 uses it) so it initializes before the panel can.
+    let sniffOn = GM_getValue('seed_sniff', false);
+    const sniffEntries = [];
+    // Bounded per-frame journals for sanitized incident reports.
+    const actionJournal = [];
+    const runtimeErrors = [];
+    const idleIncidents = new Set();
+
+    function pushBounded(list, item, max = 40) {
+        list.push(item);
+        if (list.length > max) list.splice(0, list.length - max);
+    }
+
+    if (window === window.top) whenBodyReady(() => {
+        const wrap = document.createElement('div');
+        let courseTextAccumulator = new Set();
+        let latestIncident = null;
+        wrap.innerHTML = `
+        <div id="seed-panel" style="position:fixed;bottom:20px;right:20px;z-index:999999;
+             background:#1e1e2e;color:#cdd6f4;padding:14px 18px;border-radius:12px;
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+             box-shadow:0 4px 20px rgba(0,0,0,0.5);border:1px solid #45475a;width:320px;
+             max-height:80vh;overflow-y:auto;">
+
+          <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
+               display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
+            <span>🤖 Seed Helper v9.06</span>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
+                <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
+                <button id="st-key" style="background:#313244;color:#cba6f7;border:1px solid #cba6f7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Set or remove the local OpenRouter API key">KEY</button>
+                <button id="st-logs" style="background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📊 LOGS</button>
+                <button id="st-sniff" style="background:#313244;color:#89dceb;border:1px solid #89dceb;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Record network traffic (find the completion API)">📡 SNIFF</button>
+                <button id="st-dump" style="background:#313244;color:#94e2d5;border:1px solid #94e2d5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download captured requests as JSON">⬇ DUMP</button>
+                <button id="st-incident" style="display:none;background:#313244;color:#fab387;border:1px solid #fab387;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download the latest sanitized stall report">⬇ INCIDENT</button>
+                <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped"></span>
+            </div>
+          </div>
+
+          <!-- Button row — changes based on state -->
+          <div id="st-btn-row" style="display:flex;gap:8px;margin-bottom:10px;">
+            <!-- START state: one big green button -->
+            <button id="st-start" style="
+                flex:1;padding:8px 0;background:#40a02b;border:none;border-radius:8px;
+                color:#fff;font-size:13px;font-weight:bold;cursor:pointer;">
+              ▶ START
+            </button>
+            <!-- RUNNING state: pause + stop -->
+            <button id="st-pause" style="
+                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
+                color:#cdd6f4;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
+              ⏸ PAUSE
+            </button>
+            <button id="st-stop" style="
+                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
+                color:#f38ba8;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
+              ⏹ STOP
+            </button>
+            <!-- PAUSED state: resume + stop -->
+            <button id="st-resume" style="
+                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
+                color:#a6e3a1;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
+              ▶ RESUME
+            </button>
+            <button id="st-stop2" style="
+                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
+                color:#f38ba8;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
+              ⏹ STOP
+            </button>
+          </div>
+
+          <div id="st-status" style="font-size:13px;color:#bac2de;line-height:1.4;">Stopped. Navigate to your course then click START.</div>
+          <div id="st-debug"  style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;"></div>
+
+          <div id="st-matches" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #45475a;">
+            <div style="font-size:11px;font-weight:bold;color:#f9e2af;margin-bottom:6px;">💡 MATCHING ANSWERS:</div>
+            <pre id="st-matches-text" style="font-size:11px;color:#a6e3a1;font-family:monospace;white-space:pre-wrap;margin:0;line-height:1.6;"></pre>
+          </div>
+        </div>`;
+        document.body.appendChild(wrap);
+
+        const dot     = document.getElementById('st-dot');
+        const startBtn  = document.getElementById('st-start');
+        const pauseBtn  = document.getElementById('st-pause');
+        const stopBtn   = document.getElementById('st-stop');
+        const resumeBtn = document.getElementById('st-resume');
+        const stop2Btn  = document.getElementById('st-stop2');
+        const incidentBtn = document.getElementById('st-incident');
+
+        function applyState(newState) {
+            state = newState;
+            // Reset all buttons hidden
+            [startBtn, pauseBtn, stopBtn, resumeBtn, stop2Btn].forEach(b => b.style.display = 'none');
+
+            if (state === 'stopped') {
+                startBtn.style.display = 'flex';
+                dot.style.background = '#f38ba8';
+                dot.title = 'Stopped';
+                updateStatus('Stopped. Navigate to your course then click START.', '#bac2de');
+            } else if (state === 'running') {
+                pauseBtn.style.display = 'flex';
+                stopBtn.style.display = 'flex';
+                dot.style.background = '#a6e3a1';
+                dot.title = 'Running';
+            } else if (state === 'paused') {
+                resumeBtn.style.display = 'flex';
+                stop2Btn.style.display = 'flex';
+                dot.style.background = '#f9e2af';
+                dot.title = 'Paused';
+                updateStatus('Paused. Click RESUME to continue.', '#f9e2af');
+            }
+            broadcastState();
+        }
+
+        startBtn.addEventListener('click',  () => { applyState('running'); updateStatus('Running...', '#a6e3a1'); });
+        pauseBtn.addEventListener('click',  () => applyState('paused'));
+        resumeBtn.addEventListener('click', () => { applyState('running'); updateStatus('Resumed.', '#a6e3a1'); });
+        stopBtn.addEventListener('click',   () => { applyState('stopped'); broadcastReset(); });
+        stop2Btn.addEventListener('click',  () => { applyState('stopped'); broadcastReset(); });
+
+        // Draggable panel logic
+        const panel = document.getElementById('seed-panel');
+        const header = document.getElementById('seed-panel-header');
+        let isDragging = false, startX, startY, initialX, initialY;
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            isDragging = true;
+            header.style.cursor = 'grabbing';
+            const rect = panel.getBoundingClientRect();
+            startX = e.clientX;
+            startY = e.clientY;
+            initialX = rect.left;
+            initialY = rect.top;
+
+            // Switch from bottom/right to left/top to avoid resize jumping
+            panel.style.bottom = 'auto';
+            panel.style.right = 'auto';
+            panel.style.left = initialX + 'px';
+            panel.style.top = initialY + 'px';
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            panel.style.left = (initialX + dx) + 'px';
+            panel.style.top = (initialY + dy) + 'px';
+        });
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                header.style.cursor = 'grab';
+            }
+        });
+
+        document.getElementById('st-key').addEventListener('click', () => {
+            const input = prompt('Enter your replacement OpenRouter API key. Leave blank to remove the saved key.', '');
+            if (input === null) return;
+            const value = input.trim();
+            if (!value) {
+                GM_setValue(OPENROUTER_KEY_STORAGE, '');
+                updateStatus('OpenRouter key removed.', '#f38ba8');
+            } else {
+                GM_setValue(OPENROUTER_KEY_STORAGE, value);
+                updateStatus('OpenRouter key saved locally.', '#a6e3a1');
+            }
+        });
+
+        document.getElementById('st-summary').addEventListener('click', () => {
+            const fullText = Array.from(courseTextAccumulator).join('\\n\\n');
+            if (fullText.length < 200) {
+                alert('Not enough course text collected yet. Let the script run through a few lessons first.');
+                return;
+            }
+
+            updateStatus('Generating summary...', '#f9e2af');
+            const sys = 'You are an expert summarizer. Provide a detailed, well-structured summary of the following course content. Include key takeaways, main concepts, and important facts. Format your output in clean Markdown. Start directly with the summary.';
+            const user = 'Here is the scraped text from the course:\\n\\n' + fullText.substring(0, 40000);
+
+            const apiKey = getOpenRouterApiKey();
+            if (!apiKey) { updateStatus('Set an OpenRouter key with KEY first.', '#f38ba8'); return; }
+            fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
+                body: JSON.stringify({ model: MODELS[0].id, messages: [{role:"system",content:sys}, {role:"user",content:user}], max_tokens: 1500, temperature: 0.2 })
+            }).then(r => r.json()).then(data => {
+                updateStatus('Summary ready!', '#a6e3a1');
+                const aiText = data.choices && data.choices[0] && data.choices[0].message.content ? data.choices[0].message.content.trim() : "Failed to generate summary.";
+
+                const htmlText = aiText
+                    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+                    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+                    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+                    .replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>')
+                    .replace(/\\*(.*?)\\*/g, '<em>$1</em>')
+                    .replace(/^\\- (.*$)/gim, '<ul><li>$1</li></ul>')
+                    .replace(/<\/ul>\\n<ul>/g, '')
+                    .replace(/\\n/g, '<br/>');
+
+                const win = window.open('', 'SeedSummaryWindow', 'width=800,height=800');
+                if (win) {
+                    win.document.write(`<html><head><title>Course Summary</title>
+                    <style>
+                        body { font-family: sans-serif; line-height: 1.6; padding: 30px; max-width: 800px; margin: auto; background: #1e1e2e; color: #cdd6f4; }
+                        h1, h2, h3 { color: #89b4fa; }
+                        strong { color: #a6e3a1; }
+                    </style>
+                    </head><body>
+                    <h1>Course Summary</h1>
+                    <div>${htmlText}</div>
+                    </body></html>`);
+                    win.document.close();
+                }
+            }).catch(e => {
+                updateStatus('Summary failed.', '#f38ba8');
+            });
+        });
+
+        document.getElementById('st-logs').addEventListener('click', () => {
+            if (!logsWindow || logsWindow.closed) {
+                logsWindow = window.open('', 'SeedLogsWindow');
+                if (logsWindow) {
+                    logsWindow.document.write(renderStatsHTML());
+                    logsWindow.document.close();
+                }
+            } else {
+                logsWindow.focus();
+                logsWindow.historyData = loadHistory();
+                logsWindow.document.getElementById('logs-body').innerHTML = renderStatsBody(logsWindow.historyData);
+            }
+        });
+        document.getElementById('st-nuke').addEventListener('click', () => {
+            if (confirm('WARNING: This will instantly mark the entire course (including quizzes) as 100% complete and passed in the database. Are you sure?')) {
+                window.postMessage({ type: 'SEED_NUKE' }, '*');
+                const iframes = document.querySelectorAll('iframe');
+                for (const frame of iframes) {
+                    try {
+                        frame.contentWindow.postMessage({ type: 'SEED_NUKE' }, '*');
+                    } catch(e) {}
+                }
+                alert('Nuke payload delivered! The course is marked 100% complete. Please refresh the page or return to the dashboard.');
+            }
+        });
+
+        // ── Sniffer controls (section 13 does the actual capture) ──
+        const sniffBtn = document.getElementById('st-sniff');
+        const dumpBtn  = document.getElementById('st-dump');
+        if (sniffOn) { sniffBtn.style.background = '#89dceb'; sniffBtn.style.color = '#1e1e2e'; }
+        sniffBtn.addEventListener('click', () => {
+            sniffOn = !sniffOn;
+            GM_setValue('seed_sniff', sniffOn);
+            sniffBtn.style.background = sniffOn ? '#89dceb' : '#313244';
+            sniffBtn.style.color = sniffOn ? '#1e1e2e' : '#89dceb';
+            // Relay to this window's own listener (forwards deeper) + direct iframes
+            window.postMessage({ type: 'SEED_SNIFF_SET', on: sniffOn }, '*');
+            document.querySelectorAll('iframe').forEach(f => {
+                try { f.contentWindow.postMessage({ type: 'SEED_SNIFF_SET', on: sniffOn }, '*'); } catch(e2) {}
+            });
+            updateStatus(sniffOn ? 'Sniffing network traffic…' : 'Sniffer off.', '#89dceb');
+        });
+        dumpBtn.addEventListener('click', () => {
+            const blob = new Blob([JSON.stringify(sniffEntries, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'seed_sniff_' + Date.now() + '.json';
+            a.click();
+            updateStatus('Dumped ' + sniffEntries.length + ' requests.', '#94e2d5');
+        });
+        incidentBtn.addEventListener('click', () => {
+            if (!latestIncident) return;
+            const safeType = String(latestIncident.type || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'unknown';
+            const blob = new Blob([JSON.stringify(latestIncident, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'seed_incident_' + safeType + '_' + Date.now() + '.json';
+            a.click();
+        });
+
+        window.addEventListener('message', (e) => {
+            if (!e.data) return;
+            if (e.data.type === 'SEED_STATUS') {
+                const el = document.getElementById('st-status');
+                if (el) { el.innerText = e.data.text; if (e.data.color) el.style.color = e.data.color; }
+                if (e.data.hideMatches) { const mp = document.getElementById('st-matches'); if (mp) mp.style.display = 'none'; }
+            }
+            if (e.data.type === 'SEED_DEBUG') {
+                const el = document.getElementById('st-debug');
+                if (el) el.innerText = e.data.text;
+            }
+            if (e.data.type === 'SEED_MATCHES') {
+                const mp = document.getElementById('st-matches'), mt = document.getElementById('st-matches-text');
+                if (mp && mt) { mt.innerText = e.data.text; mp.style.display = 'block'; }
+            }
+            if (e.data.type === 'SEED_STATE_QUERY') {
+                try { e.source.postMessage({ type: 'SEED_STATE_RESP', state }, '*'); } catch(e2) {}
+            }
+            if (e.data.type === 'SEED_COURSE_TEXT') {
+                const text = e.data.text.trim();
+                if (text.length > 50) {
+                    const snippet = text.substring(0, 1000);
+                    courseTextAccumulator.add(snippet);
+                }
+            }
+            if (e.data.type === 'SEED_UNHANDLED') {
+                const allowed = { 'required-response': 1, 'unknown-quiz': 1, 'ordering': 1, 'hotspot': 1, 'simulation': 1, 'external-embed': 1, 'storyline': 1 };
+                const d = e.data.detection || {};
+                if (!allowed[d.kind]) return;
+                storeIncident(e.data.incident, d.kind);
+                const label = String(d.label || d.kind).slice(0, 120);
+                const ev = d.evidence || {};
+                const evText = [ev.frame, ev.tag, ev.text, ev.cls, ev.src]
+                    .map(x => String(x || '')).filter(Boolean).join(' | ').slice(0, 200);
+                applyState('paused');
+                updateStatus(`Paused — ${label} needs an adapter. Capture a screenshot and SNIFF/DUMP.`, '#f38ba8');
+                const dbg = document.getElementById('st-debug');
+                if (dbg) dbg.innerText = `${d.kind}: ${evText}`;
+            }
+            if (e.data.type === 'SEED_TERMINAL_PAGE') {
+                storeIncident(e.data.incident, 'terminal-page');
+                const ev = (e.data.detection && e.data.detection.evidence) || {};
+                const evText = [ev.frame, ev.title].map(x => String(x || '')).filter(Boolean).join(' | ').slice(0, 200);
+                applyState('paused');
+                updateStatus('Paused — course exit/Bye page detected. Reload the course before retrying START.', '#f38ba8');
+                const dbg = document.getElementById('st-debug');
+                if (dbg) dbg.innerText = `terminal: ${evText}`;
+            }
+            if (e.data.type === 'SEED_UNKNOWN_IDLE') {
+                storeIncident(e.data.incident, 'unknown-idle');
+                applyState('paused');
+                updateStatus('Paused — no supported action found. Download INCIDENT before using NUKE or leaving the course.', '#f38ba8');
+                const dbg = document.getElementById('st-debug');
+                const fr = (e.data.incident && e.data.incident.frame) || '';
+                if (dbg) dbg.innerText = `unknown-idle: ${String(fr).slice(0, 200)}`;
+            }
+        });
+
+        // Rebuild a bounded incident object from an untrusted cross-frame payload.
+        function storeIncident(raw, fallbackType) {
+            try {
+                const safe = {
+                    helperVersion: String((raw && raw.helperVersion) || '9.05').slice(0, 20),
+                    capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
+                    type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
+                    engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
+                    frame: sanitizeIncidentUrl(raw && raw.frame),
+                    title: scrubIncidentText(raw && raw.title, 100),
+                    detection: {
+                        kind: String((raw && raw.detection && raw.detection.kind) || '').slice(0, 60),
+                        label: scrubIncidentText(raw && raw.detection && raw.detection.label, 120),
+                        evidence: {}
+                    },
+                    blockerMessages: [],
+                    controls: [],
+                    lockedNavigation: [],
+                    canvases: [],
+                    embeds: [],
+                    recentActions: [],
+                    runtimeErrors: [],
+                    recentNetwork: []
+                };
+                const srcEv = (raw && raw.detection && raw.detection.evidence) || {};
+                for (const k of ['frame', 'src']) {
+                    if (srcEv[k] != null) safe.detection.evidence[k] = sanitizeIncidentUrl(srcEv[k]);
+                }
+                for (const k of ['text', 'title']) {
+                    if (srcEv[k] != null) safe.detection.evidence[k] = scrubIncidentText(srcEv[k], 200);
+                }
+                for (const k of ['tag', 'cls']) {
+                    if (srcEv[k] != null) safe.detection.evidence[k] = clipStr(srcEv[k], 200);
+                }
+                safe.blockerMessages = (((raw && raw.blockerMessages) || []))
+                    .slice(0, 10).map(x => scrubIncidentText(x, 180));
+                const ctrl = o => ({
+                    tag: String((o && o.tag) || '').slice(0, 40),
+                    type: String((o && o.type) || '').slice(0, 40),
+                    role: String((o && o.role) || '').slice(0, 60),
+                    label: scrubIncidentText(o && o.label, 100),
+                    disabled: !!(o && o.disabled),
+                    checked: !!(o && o.checked),
+                    cls: String((o && o.cls) || '').slice(0, 120)
+                });
+                safe.controls = (((raw && raw.controls) || [])).slice(0, 40).map(ctrl);
+                safe.lockedNavigation = (((raw && raw.lockedNavigation) || [])).slice(0, 10).map(ctrl);
+                safe.canvases = (((raw && raw.canvases) || [])).slice(0, 10).map(c => ({
+                    width: Number(c && c.width) || 0,
+                    height: Number(c && c.height) || 0,
+                    label: scrubIncidentText(c && c.label, 100),
+                    cls: String((c && c.cls) || '').slice(0, 120)
+                }));
+                safe.embeds = (((raw && raw.embeds) || [])).slice(0, 10)
+                    .map(f => ({ src: sanitizeIncidentUrl(f && f.src) }));
+                safe.recentActions = (((raw && raw.recentActions) || [])).slice(0, 30).map(a => ({
+                    at: String((a && a.at) || '').slice(0, 40),
+                    kind: String((a && a.kind) || '').slice(0, 20),
+                    text: scrubIncidentText(a && a.text, 160)
+                }));
+                safe.runtimeErrors = (((raw && raw.runtimeErrors) || [])).slice(0, 20).map(er => ({
+                    at: String((er && er.at) || '').slice(0, 40),
+                    kind: String((er && er.kind) || '').slice(0, 30),
+                    message: scrubIncidentText(er && er.message, 200),
+                    source: sanitizeIncidentUrl(er && er.source),
+                    line: Number(er && er.line) || 0,
+                    column: Number(er && er.column) || 0
+                }));
+                // Top-frame only: attach bounded sniff data — never bodies.
+                safe.recentNetwork = sniffEntries.slice(-30).map(en => ({
+                    method: String((en && en.method) || '').slice(0, 20),
+                    status: Number(en && en.status) || 0,
+                    url: sanitizeIncidentUrl(en && en.url),
+                    frame: sanitizeIncidentUrl(en && en.frame)
+                }));
+                latestIncident = safe;
+                if (incidentBtn) incidentBtn.style.display = 'inline-block';
+            } catch (e) {}
+        }
+
+        function updateStatus(t, c) {
+            const el = document.getElementById('st-status');
+            if (el) { el.innerText = t; if (c) el.style.color = c; }
+        }
+        function broadcastState() {
+            document.querySelectorAll('iframe').forEach(f => {
+                try { f.contentWindow.postMessage({ type: 'SEED_STATE_RESP', state }, '*'); } catch(e2) {}
+            });
+        }
+        function broadcastReset() {
+            document.querySelectorAll('iframe').forEach(f => {
+                try { f.contentWindow.postMessage({ type: 'SEED_RESET' }, '*'); } catch(e2) {}
+            });
+        }
+    });
+
+    // Global listener for NUKE command (runs in ALL frames)
+    window.addEventListener('message', (e) => {
+        if (e.data && e.data.type === 'SEED_NUKE') {
+            try {
+                const scormScript = document.createElement('script');
+                scormScript.textContent = SCORM_COMPLETE_PAYLOAD;
+                document.body.appendChild(scormScript);
+                setTimeout(() => { try { scormScript.remove(); } catch(e){} }, 500);
+            } catch (err) {}
+        }
+    });
+
+    // =========================================================
+    // 2. CROSS-FRAME STATE SYNC (iframes)
+    // =========================================================
+    let iframeState = 'stopped'; // iframes default stopped until told otherwise
+
+    if (window !== window.top) {
+        window.addEventListener('message', (e) => {
+            if (!e.data) return;
+            if (e.data.type === 'SEED_STATE_RESP') iframeState = e.data.state;
+            if (e.data.type === 'SEED_RESET') {
+                iframeState = 'stopped';
+                resetMemory();
+            }
+        });
+        // Poll parent for state
+        setInterval(() => {
+            try { window.top.postMessage({ type: 'SEED_STATE_QUERY' }, '*'); } catch(e) {}
+        }, 1500);
+    }
+
+    function isRunning() {
+        return (window === window.top ? state : iframeState) === 'running';
+    }
+
+    // =========================================================
+    // 3. MESSAGING
+    // =========================================================
+    function sendStatus(t, c, hm) {
+        pushBounded(actionJournal, { at: new Date().toISOString(), kind: 'status', text: scrubIncidentText(t, 160) });
+        try { window.top.postMessage({ type: 'SEED_STATUS', text: t, color: c, hideMatches: !!hm }, '*'); } catch(e) {}
+        try {
+            GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/log", data: "[STATUS] " + t, headers: { "Content-Type": "text/plain" } });
+        } catch(err) {}
+    }
+    function sendDebug(t) {
+        pushBounded(actionJournal, { at: new Date().toISOString(), kind: 'debug', text: scrubIncidentText(t, 160) });
+        try { window.top.postMessage({ type: 'SEED_DEBUG', text: String(t).slice(0, 200) }, '*'); } catch(e) {}
+        console.log('[SH v9.0]', t);
+        try {
+            GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/log", data: "[DEBUG] " + t, headers: { "Content-Type": "text/plain" } });
+        } catch(err) {}
+    }
+    function sendMatches(t) {
+        try { window.top.postMessage({ type: 'SEED_MATCHES', text: t }, '*'); } catch(e) {}
+    }
+
+    // Per-frame runtime error capture for incident reports.
+    // Only timestamp, kind, scrubbed message, sanitized source, line/column —
+    // never stacks, Error/event objects, request bodies, or form values.
+    window.addEventListener('error', (e) => {
+        try {
+            pushBounded(runtimeErrors, {
+                at: new Date().toISOString(),
+                kind: 'error',
+                message: scrubIncidentText(e && e.message, 200),
+                source: sanitizeIncidentUrl(e && e.filename),
+                line: e && e.lineno,
+                column: e && e.colno
+            });
+        } catch (err) {}
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+        try {
+            const r = e && e.reason;
+            const msg = (r && r.message) ? r.message : (typeof r === 'object' ? 'unhandled rejection' : r);
+            pushBounded(runtimeErrors, {
+                at: new Date().toISOString(),
+                kind: 'unhandledrejection',
+                message: scrubIncidentText(msg, 200),
+                source: sanitizeIncidentUrl(location.href),
+                line: 0,
+                column: 0
+            });
+        } catch (err) {}
+    });
+
+    function reportUnhandledAdapter(detection) {
+        if (!detection || !detection.signature || unhandledSurfaces.has(detection.signature)) return false;
+        unhandledSurfaces.add(detection.signature);
+        const incident = buildIncident(detection.kind || 'unhandled', detection);
+        try { window.top.postMessage({ type: 'SEED_UNHANDLED', detection, incident }, '*'); } catch(e) {}
+        sendDebug(`Unhandled surface: ${detection.kind} @ ${String(detection.signature).slice(0, 120)}`);
+        return true;
+    }
+
+    function reportTerminalPage(detection) {
+        if (!detection || !detection.signature || terminalPages.has(detection.signature)) return false;
+        terminalPages.add(detection.signature);
+        try { window.top.postMessage({ type: 'SEED_TERMINAL_PAGE', detection, incident: buildIncident('terminal-page', detection) }, '*'); } catch(e) {}
+        sendDebug(`Terminal page: ${String(detection.signature).slice(0, 140)}`);
+        return true;
+    }
+
+    function reportUnknownIdle() {
+        if (!isLikelyCourseContentFrame()) return false;
+        const frame = frameOriginPath();
+        const title = clipStr(document.title, 80);
+        let fp = '';
+        try {
+            fp = Array.from(document.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="radio"], [role="checkbox"]'))
+                .filter(isRenderedForIncident).slice(0, 10)
+                .map(el => [el.tagName, el.getAttribute('role') || '', (el.getAttribute('class') || '').slice(0, 40)].join(':'))
+                .join(';');
+        } catch (e) {}
+        const signature = clipStr('idle|' + frame + '|' + title + '|' + fp, 200);
+        if (idleIncidents.has(signature)) return false;
+        idleIncidents.add(signature);
+        const incident = buildIncident('unknown-idle', null);
+        try { window.top.postMessage({ type: 'SEED_UNKNOWN_IDLE', incident }, '*'); } catch(e) {}
+        sendDebug(`Unknown idle: ${signature.slice(0, 140)}`);
+        return true;
+    }
+
+    function simulateHumanClick(el) {
+        if (!el) return;
+
+        // Scroll into view safely without triggering horizontal carousel bugs
+        try {
+            const r = el.getBoundingClientRect();
+            if (r.top < 0 || r.bottom > window.innerHeight) {
+                const scroller = el.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
+                scroller.scrollTop += (r.top - window.innerHeight / 2);
+            }
+        } catch (e) {}
+
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+
+        const events = [
+            new PointerEvent('pointerover', { bubbles: true, cancelable: true, clientX: x, clientY: y }),
+            new MouseEvent('mouseover', { bubbles: true, cancelable: true, clientX: x, clientY: y }),
+            new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, buttons: 1 }),
+            new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 1 }),
+            new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, buttons: 0 }),
+            new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 0 }),
+            new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 0 })
+        ];
+
+        for (const ev of events) {
+            el.dispatchEvent(ev);
+        }
+
+        try {
+            // We previously avoided native click() on quiz options because it triggered auto-scroll
+            // on hidden carousel items. Since we now strict-filter offscreen items, native click()
+            // is safe and REQUIRED to actually toggle native checkboxes.
+            el.click();
+
+            // If the wrapper isn't a label, clicking it might not natively toggle the input
+            if (el.tagName !== 'LABEL' && el.tagName !== 'INPUT') {
+                const input = el.querySelector('input[type="checkbox"], input[type="radio"]');
+                if (input) input.click();
+            }
+
+            // React forcefully trigger
+            const reactKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+            if (reactKey && el[reactKey]) {
+                const props = el[reactKey];
+                const mockEvent = { bubbles: true, cancelable: true, target: el, currentTarget: el, clientX: x, clientY: y, preventDefault: () => {}, stopPropagation: () => {} };
+                if (props.onClick) props.onClick(mockEvent);
+                else if (props.onPointerDown) props.onPointerDown(mockEvent);
+                else if (props.onMouseDown) props.onMouseDown(mockEvent);
+                else if (props.onChange) props.onChange(mockEvent);
+            }
+        } catch (e) {}
+    }
+
+    // =========================================================
+    // 4. VISIBILITY — horizontal bounds check included
+    // =========================================================
+    function isVisible(el) {
+        if (!el) return false;
+        // Reject elements explicitly hidden from assistive tech (e.g. the NEXT btn before answer submitted)
+        if (el.getAttribute('aria-hidden') === 'true') return false;
+        const r = el.getBoundingClientRect();
+        // Zero-size check
+        if (r.width === 0 || r.height === 0) return false;
+        // Tiny-element check: catches `visually-hidden-always` (1×1px clip trick)
+        if (r.width <= 5 && r.height <= 5) return false;
+        // Horizontal bounds: ignore elements pushed off-screen by Rise sliders
+        const cx = r.left + r.width / 2;
+        if (cx < -50 || cx > window.innerWidth + 50) return false;
+        // Reject elements inside inert containers (Rise quiz carousel: --next, --done, --penultimate, --future cards)
+        if (el.closest('[inert]')) return false;
+        const s = window.getComputedStyle(el);
+        if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+        if (s.pointerEvents === 'none') return false;
+        return true;
+    }
+
+    // =========================================================
+    // 4b. UNSUPPORTED-ADAPTER DETECTION
+    // Pure classifier (fixture-testable) + bounded DOM signal probes.
+    // =========================================================
+    function classifyUnhandledAdapter(signals) {
+        if (signals.requiredResponse) return { kind: 'required-response', label: 'unhandled required-response interaction' };
+        if (signals.unknownQuiz) return { kind: 'unknown-quiz', label: 'unknown quiz interaction' };
+        if (signals.ordering) return { kind: 'ordering', label: 'ordering/sorting interaction' };
+        if (signals.hotspot) return { kind: 'hotspot', label: 'hotspot interaction' };
+        if (signals.simulation) return { kind: 'simulation', label: 'simulation/canvas interaction' };
+        if (signals.externalEmbed) return { kind: 'external-embed', label: 'cross-origin external embed' };
+        if (signals.storyline) return { kind: 'storyline', label: 'unhandled Storyline surface' };
+        return null;
+    }
+
+    function firstVisible(selector) {
+        try {
+            const els = document.querySelectorAll(selector);
+            for (const el of els) if (isVisible(el)) return el;
+        } catch (e) {}
+        return null;
+    }
+
+    function clipStr(s, n) {
+        return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n);
+    }
+
+    function scrubIncidentText(value, max = 200) {
+        return clipStr(value, max)
+            .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+            .replace(/sk-[A-Za-z0-9_-]+/g, '[redacted-key]')
+            .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]');
+    }
+
+    function sanitizeIncidentUrl(value) {
+        const raw = String(value || '');
+        if (/^scorm:\/\//i.test(raw)) return raw.split('?')[0].slice(0, 220);
+        try {
+            const u = new URL(raw, location.href);
+            if (!/^https?:$/.test(u.protocol)) return u.protocol + '//[redacted]';
+            return (u.origin + u.pathname).slice(0, 220);
+        } catch (e) { return ''; }
+    }
+
+    function frameOriginPath() {
+        return sanitizeIncidentUrl(location.href) || 'unknown';
+    }
+
+    function elEvidence(el) {
+        return {
+            frame: clipStr(frameOriginPath(), 200),
+            tag: el && el.tagName ? String(el.tagName).toLowerCase() : '',
+            text: clipStr(el ? (el.getAttribute('aria-label') || el.innerText || el.textContent) : '', 80),
+            cls: clipStr(el ? (el.getAttribute('class') || '') : '', 120)
+        };
+    }
+
+    function sanitizeEmbedSrc(src) {
+        return sanitizeIncidentUrl(src);
+    }
+
+    function isAllowedEmbedHost(hostname) {
+        const host = String(hostname || '').toLowerCase();
+        return ['seedtalent.com', 'cloudfront.net', 'coassemble.com', 'articulate.com']
+            .some(d => host === d || host.endsWith('.' + d));
+    }
+
+    // Lighter than isVisible: validation surfaces may legitimately have
+    // pointer-events:none while still being rendered on screen.
+    function isRenderedForIncident(el) {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        const s = window.getComputedStyle(el);
+        if (s.display === 'none' || s.visibility === 'hidden') return false;
+        return true;
+    }
+
+    function detectCourseEngine() {
+        try {
+            if (/story(?:_html5)?\.html|storyline|story_content/i.test(location.pathname) ||
+                document.querySelector('.slide-object, [data-acc-text], #slide')) return 'Storyline';
+            if (document.querySelector('.lesson-main, .page-wrap, [data-block-id], [data-quiz]')) return 'Rise';
+        } catch (e) {}
+        try {
+            if ((location.hostname || '').toLowerCase().endsWith('coassemble.com')) return 'Coassemble';
+        } catch (e) {}
+        return 'Unknown';
+    }
+
+    function isLikelyCourseContentFrame() {
+        try {
+            const host = (location.hostname || '').toLowerCase();
+            const path = (location.pathname || '').toLowerCase();
+            if (host.endsWith('coassemble.com') || host.endsWith('articulate.com')) return true;
+            if (host.endsWith('cloudfront.net') &&
+                (/\/scormcontent\//.test(path) || /story(?:_html5)?\.html|story_content/.test(path))) return true;
+            return detectCourseEngine() !== 'Unknown';
+        } catch (e) { return false; }
+    }
+
+    function controlEvidence(el) {
+        return {
+            tag: el && el.tagName ? String(el.tagName).toLowerCase() : '',
+            type: clipStr(el && el.getAttribute ? el.getAttribute('type') : '', 40),
+            role: clipStr(el && el.getAttribute ? el.getAttribute('role') : '', 60),
+            label: scrubIncidentText(el ? (el.getAttribute('aria-label') || el.innerText || el.textContent) : '', 100),
+            disabled: !!(el && (el.disabled || el.getAttribute('aria-disabled') === 'true')),
+            checked: !!(el && el.checked),
+            cls: clipStr(el ? (el.getAttribute('class') || '') : '', 120)
+        };
+    }
+
+    // Explicit-schema sanitized incident payload. Never reads .value, outerHTML,
+    // request/response bodies, headers, cookies, or stacks.
+    function buildIncident(type, detection) {
+        const incident = {
+            helperVersion: '9.05',
+            capturedAt: new Date().toISOString(),
+            type: clipStr(type, 60),
+            engine: detectCourseEngine(),
+            frame: clipStr(frameOriginPath(), 200),
+            title: scrubIncidentText(document.title, 100),
+            detection: { kind: '', label: '', evidence: {} },
+            blockerMessages: [],
+            controls: [],
+            lockedNavigation: [],
+            canvases: [],
+            embeds: [],
+            recentActions: [],
+            runtimeErrors: []
+        };
+        if (detection) {
+            incident.detection.kind = clipStr(detection.kind, 60);
+            incident.detection.label = clipStr(detection.label, 120);
+            const srcEv = detection.evidence || {};
+            for (const k of ['frame', 'tag', 'text', 'cls', 'src', 'title']) {
+                if (srcEv[k] != null) incident.detection.evidence[k] = scrubIncidentText(srcEv[k], 200);
+            }
+        }
+        try {
+            const seen = new Set();
+            for (const el of document.querySelectorAll(
+                '[role="alert"], [aria-live="assertive"], [class*="validation"], [class*="error"], [class*="required"], [class*="hint"]')) {
+                if (incident.blockerMessages.length >= 10) break;
+                if (!isRenderedForIncident(el)) continue;
+                const txt = scrubIncidentText(el.innerText || el.textContent || '', 180);
+                if (!txt || seen.has(txt)) continue;
+                seen.add(txt);
+                incident.blockerMessages.push(txt);
+            }
+        } catch (e) {}
+        try {
+            for (const el of document.querySelectorAll(
+                'button, a, input, select, textarea, [role="button"], [role="radio"], [role="checkbox"], [role="option"], [aria-disabled]')) {
+                if (incident.controls.length >= 40) break;
+                if (!isRenderedForIncident(el)) continue;
+                incident.controls.push(controlEvidence(el));
+            }
+        } catch (e) {}
+        try {
+            for (const el of document.querySelectorAll('button, a, [role="button"], [aria-disabled]')) {
+                if (incident.lockedNavigation.length >= 10) break;
+                if (!isRenderedForIncident(el)) continue;
+                const t = clipStr(el.getAttribute('aria-label') || el.innerText || el.textContent || '', 60);
+                if (!/\b(next|continue|submit|check|done)\b/i.test(t)) continue;
+                const locked = el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+                    !!el.closest('.is-disabled, [disabled], .locked, [class*="locked"], [aria-disabled="true"]');
+                if (!locked) continue;
+                incident.lockedNavigation.push(controlEvidence(el));
+            }
+        } catch (e) {}
+        try {
+            for (const c of document.querySelectorAll('canvas')) {
+                if (incident.canvases.length >= 10) break;
+                if (!isRenderedForIncident(c)) continue;
+                const r = c.getBoundingClientRect();
+                incident.canvases.push({
+                    width: Math.round(r.width),
+                    height: Math.round(r.height),
+                    label: scrubIncidentText(c.getAttribute('aria-label') || '', 100),
+                    cls: clipStr(c.getAttribute('class') || '', 120)
+                });
+            }
+        } catch (e) {}
+        try {
+            for (const f of document.querySelectorAll('iframe')) {
+                if (incident.embeds.length >= 10) break;
+                if (!isRenderedForIncident(f)) continue;
+                const src = sanitizeIncidentUrl(f.getAttribute('src') || '');
+                if (!src) continue;
+                incident.embeds.push({ src });
+            }
+        } catch (e) {}
+        incident.recentActions = actionJournal.slice(-30).map(a => ({
+            at: clipStr(a && a.at, 40),
+            kind: clipStr(a && a.kind, 20),
+            text: scrubIncidentText(a && a.text, 160)
+        }));
+        incident.runtimeErrors = runtimeErrors.slice(-20).map(er => ({
+            at: clipStr(er && er.at, 40),
+            kind: clipStr(er && er.kind, 30),
+            message: scrubIncidentText(er && er.message, 200),
+            source: sanitizeIncidentUrl(er && er.source),
+            line: er && er.line,
+            column: er && er.column
+        }));
+        return incident;
+    }
+
+    function isTerminalNavLabel(cleanText) {
+        return ['EXIT', 'EXIT COURSE', 'FINISH', 'COMPLETE'].includes(cleanText);
+    }
+
+    function isKnownForwardLabel(cleanText) {
+        return [
+            'CONTINUE', 'NEXT LESSON', 'NEXT', 'START COURSE', 'RESUME COURSE',
+            'START QUIZ', 'START', 'BEGIN', 'ENTER', 'LETS GO', 'RESUME'
+        ].includes(cleanText);
+    }
+
+    function detectCourseExitPage() {
+        const frame = frameOriginPath();
+        const title = clipStr(document.title, 80);
+        const text = clipStr(document.body ? document.body.innerText : '', 400);
+        const lowerTitle = title.toLowerCase();
+        const path = location.pathname.toLowerCase();
+        const shortBody = text.length <= 300;
+        const matched = lowerTitle === 'bye' || /\/(?:bye|exit)(?:\.html?)?\/?$/.test(path) ||
+            (shortBody && /\b(you may (?:now )?close this window|course has ended|session has ended)\b/i.test(text));
+        if (!matched) return null;
+        const signature = clipStr('terminal|' + frame + '|' + title, 200);
+        return { signature, evidence: { frame: clipStr(frame, 200), title, text: clipStr(text, 120) } };
+    }
+
+    function detectUnhandledAdapter() {
+        try {
+            if (!isLikelyCourseContentFrame()) return null;
+            const signals = {};
+            const detail = {};
+
+            // Required-response validation surfaces block forward nav and need a
+            // dedicated adapter. Detect before generic quiz probing; the bare word
+            // "required" alone is not sufficient — the text must match a directive.
+            try {
+                const reqEl = Array.from(document.querySelectorAll(
+                    '[role="alert"], [aria-live="assertive"], [class*="validation"], [class*="error"], [class*="required"], [class*="hint"]'
+                )).find(el => {
+                    if (!isRenderedForIncident(el)) return false;
+                    const txt = scrubIncidentText(el.innerText || el.textContent || '', 200);
+                    return /please\s+(?:provide|select|choose|answer)|(?:response|answer|selection)\s+(?:is\s+)?required|complete\s+(?:this\s+)?(?:interaction|question)|correct\s+(?:answer|response)\s+required/i.test(txt);
+                });
+                if (reqEl) {
+                    signals.requiredResponse = true;
+                    detail['required-response'] = reqEl.closest('.quiz-card, [data-block-id], [class*="interaction"], form, section, article') || reqEl;
+                }
+            } catch (e) {}
+
+            // Unknown quiz: a SUBMIT button is visible but detectActiveQuiz can't classify it.
+            // Skip when a feedback/result card is already showing a verdict.
+            try {
+                const submit = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+                    .find(b => (b.innerText || '').trim().toUpperCase() === 'SUBMIT' && isVisible(b));
+                if (submit && !detectActiveQuiz(new Set())) {
+                    const verdict = Array.from(document.querySelectorAll(
+                        '.quiz-card__feedback, [class*="feedback--active"], .quiz-card__feedback-label, .quiz-feedback, [class*="result-card"]'
+                    )).find(el => isVisible(el) && /\b(correct|incorrect|passed|failed)\b/i.test(el.innerText || ''));
+                    if (!verdict) { signals.unknownQuiz = true; detail['unknown-quiz'] = submit; }
+                }
+            } catch (e) {}
+
+            const ordEl = firstVisible('[data-ordering], [data-sorting], [class*="sorting-activity"], [class*="ordering-interaction"], [class*="sequence-interaction"], [aria-label*="reorder" i]');
+            if (ordEl) { signals.ordering = true; detail.ordering = ordEl; }
+
+            // .labeled-graphic-marker deliberately excluded — START already handles it.
+            const hotEl = firstVisible('[data-hotspot], [class*="hotspot-question"], [class*="hotspot-interaction"], svg [aria-label*="hotspot" i]');
+            if (hotEl) { signals.hotspot = true; detail.hotspot = hotEl; }
+
+            let simEl = firstVisible('[data-simulation], [class*="simulation"], [aria-label*="simulation" i]');
+            if (!simEl) {
+                simEl = Array.from(document.querySelectorAll('canvas')).find(c => {
+                    if (!isVisible(c)) return false;
+                    const r = c.getBoundingClientRect();
+                    if (r.width < 300 || r.height < 180) return false;
+                    const host = c.closest('div, section, article, main') || c.parentElement;
+                    const txt = host ? clipStr(
+                        (host.getAttribute('class') || '') + ' ' + (host.getAttribute('aria-label') || '') + ' ' + (host.innerText || ''), 300) : '';
+                    return /simulation|practice|try it|exercise/i.test(txt);
+                });
+            }
+            if (simEl) { signals.simulation = true; detail.simulation = simEl; }
+
+            const extFrame = Array.from(document.querySelectorAll('iframe')).find(f => {
+                if (!isVisible(f)) return false;
+                if (!f.closest('[data-block-id], .lesson-main, .page-wrap, .slide-object, [class*="embed"]')) return false;
+                const src = (f.getAttribute('src') || '').trim();
+                if (!src) return false;
+                try {
+                    const u = new URL(src, location.href);
+                    return u.origin !== location.origin && !isAllowedEmbedHost(u.hostname);
+                } catch (e) { return false; }
+            });
+            if (extFrame) { signals.externalEmbed = true; detail['external-embed'] = extFrame; }
+
+            const storyEl = firstVisible('.slide-object, [data-acc-text], #slide');
+            if (/story(?:_html5)?\.html|storyline|story_content/i.test(location.pathname) || storyEl) {
+                signals.storyline = true;
+                detail.storyline = storyEl || document.body;
+            }
+
+            const kindInfo = classifyUnhandledAdapter(signals);
+            if (!kindInfo) return null;
+
+            const el = detail[kindInfo.kind];
+            const evidence = elEvidence(el);
+            if (kindInfo.kind === 'external-embed' && el) {
+                evidence.src = sanitizeEmbedSrc(el.getAttribute('src') || '');
+            }
+            const signature = clipStr(
+                kindInfo.kind + '|' + evidence.frame + '|' + evidence.tag + '|' + (evidence.src || evidence.cls), 200);
+            return { kind: kindInfo.kind, label: kindInfo.label, signature, evidence };
+        } catch (e) { return null; }
+    }
+
+    // =========================================================
+    // 5. MEMORY
+    // =========================================================
+    let isSolving = false;
+    let nextActionTime = 0;
+
+    const attempted     = new Set();
+    const sessionAttempts = new Set();
+    const recordedAttempts = new Set();
+    const clickedNavs   = new Set();
+    const interactedBlocks = {};
+    const watchedMedia  = new Set();
+    const mediaRetries  = {};
+    const takeAgainRetries = {};
+    const lastAttempt   = {};
+    const unhandledSurfaces = new Set();
+    const terminalPages = new Set();
+    let stuckSince = 0;
+
+    function loadPastFailures() {
+        try {
+            const data = JSON.parse(GM_getValue('seed_past_failures', '{}'));
+            const fails = {};
+            for (const key in data) fails[key] = new Set(data[key]);
+            return fails;
+        } catch(e) { return {}; }
+    }
+    function savePastFailures(fails) {
+        try {
+            const data = {};
+            for (const key in fails) data[key] = Array.from(fails[key]);
+            GM_setValue('seed_past_failures', JSON.stringify(data));
+        } catch(e) {}
+    }
+
+    // Persistent History Logs
+    function loadHistory() {
+        try { return JSON.parse(GM_getValue('seed_history', '{}')); } catch(e) { return {}; }
+    }
+    let logsWindow = null;
+
+    function saveHistory(data) {
+        try {
+            GM_setValue('seed_history', JSON.stringify(data));
+            if (logsWindow && !logsWindow.closed) {
+                logsWindow.historyData = data;
+                logsWindow.document.getElementById('logs-body').innerHTML = renderStatsBody(data);
+            }
+        } catch(e) {}
+    }
+
+    // Generate HTML for Logs Viewer
+    function getCourseName() {
+        const titleEl = document.querySelector('.nav-sidebar-header__title, .course-title, [class*="course-title"], header h1');
+        if (titleEl) return (titleEl.innerText || titleEl.textContent || '').trim();
+        return document.title && document.title !== 'Seed Talent' ? document.title : 'Unknown Course';
+    }
+
+
+
+    function renderStatsBody(history) {
+        let correctCount = 0; let wrongCount = 0;
+        let totalQs = Object.keys(history).length;
+
+        let headerHtml = `<div style="display:flex; justify-content:space-between; align-items:center;">
+            <h1>📊 Performance Logs</h1>
+            <div>
+                <span style="color:#a6adc8; margin-right: 15px; font-size: 14px; opacity: 0.8;">(Live Updating)</span>
+                <button onclick="downloadCSV()">⬇ Download CSV</button>
+            </div>
+        </div>`;
+
+        let questionsHtml = '';
+        for (const qId in history) {
+            const q = history[qId];
+            let qStatus = 'Unanswered / Unknown';
+            let statusClass = '';
+
+            if (q.attempts && q.attempts.length > 0) {
+                const lastResult = q.attempts[q.attempts.length - 1].result;
+                if (lastResult === 'Correct') { correctCount++; qStatus = 'Solved Correctly'; statusClass = 'correct'; }
+                else if (lastResult === 'Incorrect') { wrongCount++; qStatus = 'Failed (Retrying...)'; statusClass = 'incorrect'; }
+            }
+
+            let courseBadge = q.course && q.course !== 'Unknown Course' ?
+                `<span style="background:#b4befe; color:#1e1e2e; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 10px; font-weight: bold;">${q.course}</span>` : '';
+
+            let card = `<div class="q-card">
+                <h3 style="margin-top:0; color:#89b4fa;">Q: ${qId}</h3>
+                <p style="margin:5px 0;">Type: <b>${q.type}</b> | Status: <span class="${statusClass}">${qStatus}</span> ${courseBadge}</p>`;
+
+            if (q.knownCorrect) {
+                card += `<div style="background: rgba(166, 227, 161, 0.1); border-left: 4px solid #a6e3a1; padding: 10px; margin: 10px 0; border-radius: 4px;">
+                    <b style="color: #a6e3a1;">✅ Revealed Correct Answer:</b><br>
+                    <span style="font-family: monospace;">${JSON.stringify(q.knownCorrect)}</span>
+                </div>`;
+            }
+
+            card += `<div style="display:flex; gap: 20px;">
+                    <div style="flex:1;">
+                        <h4 style="margin-bottom:5px;">Options/Items:</h4>
+                        <ul style="margin-top:0; padding-left:20px;">`;
+
+            if (q.type === 'matching') {
+                card += `<li><b>Left:</b></li>`;
+                if(q.left) q.left.forEach(l => card += `<li>${l}</li>`);
+                card += `<li><b>Right:</b></li>`;
+                if(q.right) q.right.forEach(r => card += `<li>${r}</li>`);
+            } else {
+                if(q.options) q.options.forEach(o => card += `<li>${o}</li>`);
+            }
+
+            card += `</ul></div><div style="flex:1;"><h4 style="margin-bottom:5px;">Attempt History:</h4>`;
+
+            if (!q.attempts || q.attempts.length === 0) {
+                card += `<p style="color:#a6adc8; font-style:italic;">No attempts recorded with feedback yet.</p>`;
+            } else {
+                q.attempts.forEach((a, i) => {
+                    const resClass = a.result === 'Correct' ? 'correct' : 'incorrect';
+                    card += `<div class="guess">
+                        <b>Attempt ${i+1}</b> - <span class="${resClass}">${a.result}</span> <span style="color:#a6adc8;font-size:12px;">(${new Date(a.time).toLocaleTimeString()})</span><br>
+                        ${a.guess}
+                    </div>`;
+                });
+            }
+            card += `</div></div></div>`;
+            questionsHtml += card;
+        }
+
+        const acc = (correctCount + wrongCount) > 0 ? Math.round((correctCount / (correctCount + wrongCount)) * 100) : 0;
+
+        let statsHtml = `<div style="background:#45475a; padding:15px; border-radius:8px; margin-bottom:20px;">
+            <h2 style="margin-top:0;">Overall Accuracy: <span style="color:${acc > 70 ? '#a6e3a1' : '#f9e2af'}">${acc}%</span></h2>
+            <p style="margin-bottom:0;">Questions Encountered: <b>${totalQs}</b> | Solved: <b>${correctCount}</b> | Currently Failing: <b>${wrongCount}</b></p>
+        </div><hr style="border-color:#45475a; margin: 20px 0;">`;
+
+        return headerHtml + statsHtml + questionsHtml;
+    }
+
+    function renderStatsHTML() {
+        const history = loadHistory();
+        let html = `<html><head><title>Seed Helper Logs</title>
+        <style>
+            body { font-family: sans-serif; background: #1e1e2e; color: #cdd6f4; padding: 20px; line-height: 1.5; }
+            .q-card { background: #313244; margin-bottom: 20px; padding: 15px; border-radius: 8px; border: 1px solid #45475a; }
+            .correct { color: #a6e3a1; font-weight: bold; }
+            .incorrect { color: #f38ba8; font-weight: bold; }
+            .guess { background: #45475a; padding: 8px; border-radius: 4px; margin-top: 8px; font-family: monospace; }
+            button { background: #89b4fa; color: #1e1e2e; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 14px; }
+            button:hover { opacity: 0.9; }
+        </style>
+        <script>
+            var historyData = ${JSON.stringify(history)};
+            function downloadCSV() {
+                let csv = "Course,Question,Type,Result,Guess,Time\\n";
+                for (let q in historyData) {
+                    const attempts = historyData[q].attempts || [];
+                    const c = (historyData[q].course || 'Unknown').replace(/"/g, '""');
+                    if (!attempts.length) {
+                        csv += '"' + c + '","' + q.replace(/"/g, '""') + '","' + historyData[q].type + '","Unanswered","",""\\n';
+                    } else {
+                        for (let a of attempts) {
+                            csv += '"' + c + '","' + q.replace(/"/g, '""') + '","' + historyData[q].type + '","' + a.result + '","' + (a.guess||'').replace(/"/g, '""') + '","' + a.time + '"\\n';
+                        }
+                    }
+                }
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'seed_talent_logs.csv';
+                a.click();
+            }
+        </script>
+        </head><body id="logs-body">
+        ${renderStatsBody(history)}
+        </body></html>`;
+        return html;
+    }
+
+    const pastFailures = loadPastFailures();
+    let lastSolvedQuestion = '';
+
+    function resetMemory() {
+        attempted.clear();
+        clickedNavs.clear();
+        Object.keys(interactedBlocks).forEach(k => delete interactedBlocks[k]);
+        watchedMedia.clear();
+        isSolving = false;
+        nextActionTime = 0;
+        Object.keys(mediaRetries).forEach(k => delete mediaRetries[k]);
+        Object.keys(takeAgainRetries).forEach(k => delete takeAgainRetries[k]);
+        unhandledSurfaces.clear();
+        terminalPages.clear();
+        idleIncidents.clear();
+        stuckSince = 0;
+    }
+
+    // =========================================================
+    // 6. QUIZ DETECTION
+    //
+    // ✅ PROVEN: document-wide label search (NOT card-scoped).
+    //
+    // Rise does not reliably share a common ancestor between the
+    // SUBMIT button and the answer labels. Card-scoped search
+    // returns 0 labels and falls through to Priority B (NEXT btn),
+    // causing the script to skip every question unanswered.
+    //
+    // See dev_notes.md for full explanation.
+    // =========================================================
+    function detectActiveQuiz(attemptedSet) {
+        const submitBtns = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(b => {
+            const t = (b.innerText || '').trim().toUpperCase();
+            if (t !== 'SUBMIT') return false;
+            const r = b.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) return false;
+            const s = window.getComputedStyle(b);
+            if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+            return true;
+        });
+
+        for (const submitBtn of submitBtns) {
+            let container = submitBtn.closest('.quiz-card, .block-knowledge, .quiz-item__card, .quiz-question, .question-container, .quiz-lesson-content, [class*="quiz-question"]')
+                         || submitBtn.closest('.lesson-main, .page-wrap')
+                         || document;
+
+        // Helper to check if an option is actually visually on screen (ignoring pointer-events)
+        const isOptionVisible = el => {
+            if (!el || el.getAttribute('aria-hidden') === 'true' || el.closest('[inert]')) return false;
+            const r = el.getBoundingClientRect();
+            if (r.width <= 5 && r.height <= 5) return false;
+            const cx = r.left + r.width / 2;
+            if (cx < -50 || cx > window.innerWidth + 50) return false; // Carousel off-screen check
+            const s = window.getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+            return true;
+        };
+
+        // Step 2: find MCQ labels/wrappers within the container
+        let mcqLabels = Array.from(container.querySelectorAll(
+            '.quiz-multiple-response-option-wrap, ' +
+            '.quiz-single-response-option-wrap, ' +
+            '.quiz-multiple-choice-option-wrap, ' +
+            '.quiz-single-choice-option-wrap, ' +
+            '[class*="-option-wrap"], ' +
+            '.quiz-card__interactive li, ' +
+            '.quiz-card__interactive label'
+        )).filter(isOptionVisible);
+
+        // Fallback for generic LMSs: labels that explicitly wrap an input
+        if (mcqLabels.length === 0) {
+            mcqLabels = Array.from(container.querySelectorAll('li label, label, .option')).filter(el => {
+                if (!isOptionVisible(el)) return false;
+                return el.querySelector('input[type="radio"], input[type="checkbox"]');
+            });
+        }
+
+        // Remove inner descendants to avoid duplicates, keeping the outermost wrappers
+        mcqLabels = mcqLabels.filter(el => !mcqLabels.some(other => other !== el && other.contains(el)));
+
+        sendDebug(`detectActiveQuiz: Found submit button. Container=${container.tagName}. MCQ Options=${mcqLabels.length}`);
+
+        if (mcqLabels.length === 0) continue;
+
+        // Step 3: find matching pieces using confirmed explicit column selectors
+        const col1Btns = Array.from(container.querySelectorAll(
+            'ul.matching-interaction-col-1 button.matching-interaction-piece, ' +
+            'li.matching-interaction-item.draggable button.matching-interaction-piece'
+        )).filter(el => isVisible(el));
+
+        const col2Btns = Array.from(container.querySelectorAll(
+            'ul.matching-interaction-col-2 button.matching-interaction-piece, ' +
+            'li.matching-interaction-item.droppable button.matching-interaction-piece'
+        )).filter(el => isVisible(el));
+
+        // Step 4: generate a stable quiz ID
+        let titleEl = container.querySelector('.quiz-card__title, [class*="quiz-card__title"], .quiz-question__title, [class*="question-title"]');
+        if (!titleEl) titleEl = container.querySelector('h1, h2, h3, h4, legend');
+        let qId = titleEl ? (titleEl.innerText || titleEl.textContent).trim() : '';
+        if (qId.length > 150) qId = qId.substring(0, 150); // Sanity check length
+
+        // Fallback: hash answer option text
+        if (!qId) {
+            const pieces = [...mcqLabels, ...col1Btns, ...col2Btns]
+                .map(el => (el.innerText || el.textContent || '').trim())
+                .filter(Boolean);
+            if (pieces.length > 0) qId = 'hash_' + pieces.join('|').substring(0, 180);
+        }
+        if (!qId) qId = 'unknown_' + Date.now();
+
+        if (attemptedSet && attemptedSet.has(qId)) {
+            sendDebug(`detectActiveQuiz: Found submit button but quiz ${qId.substring(0, 20)} already attempted. Skipping...`);
+            continue;
+        }
+
+        // Step 5: classify
+        if (col1Btns.length >= 2 && col2Btns.length >= 2) {
+            return { type: 'matching', submitBtn, id: qId, col1: col1Btns, col2: col2Btns };
+        }
+        if (mcqLabels.length >= 2) {
+            let isMulti = true;
+            const firstInput = mcqLabels[0]?.querySelector('input[type="radio"], input[type="checkbox"]');
+
+            if (firstInput) {
+                isMulti = firstInput.type === 'checkbox';
+            } else if (mcqLabels[0].className.toLowerCase().includes('single')) {
+                isMulti = false;
+            } else if (mcqLabels[0].className.toLowerCase().includes('multiple') || mcqLabels[0].className.toLowerCase().includes('multi')) {
+                isMulti = true;
+            } else if (mcqLabels[0].querySelector('[role="radio"]') || mcqLabels[0].getAttribute('role') === 'radio') {
+                isMulti = false;
+            } else if (mcqLabels[0].querySelector('[role="checkbox"]') || mcqLabels[0].getAttribute('role') === 'checkbox') {
+                isMulti = true;
+            } else if (mcqLabels[0].closest('[role="radiogroup"]')) {
+                isMulti = false;
+            }
+
+            return { type: 'mcq', submitBtn, id: qId, labels: mcqLabels, isMulti };
+        }
+
+        const fillInput = container.querySelector('input.quiz-fill__input, [class*="quiz-fill"] input[type="text"]');
+        if (fillInput) {
+            return { type: 'fill_in_blank', submitBtn, id: qId, input: fillInput };
+        }
+        } // end of submitBtn loop
+
+        return null;
+    }
+
+    // =========================================================
+    // 7. MAIN LOOP
+    // =========================================================
+    setInterval(() => {
+        if (!isRunning()) return;
+
+        const now = Date.now();
+        if (now < nextActionTime) {
+            stuckSince = 0;
+            sendDebug(isSolving ? 'Waiting for AI...' : `Delay ${Math.round((nextActionTime - now) / 1000)}s`);
+            return;
+        }
+
+        // Terminal guard: never act on a course exit/Bye page.
+        const terminalPage = detectCourseExitPage();
+        if (terminalPage) {
+            reportTerminalPage(terminalPage);
+            return;
+        }
+
+        // ── TRACK FEEDBACK RESULTS ─────────────────────────────
+        const fbContainers = Array.from(document.querySelectorAll('.quiz-card__feedback, [class*="feedback--active"], .quiz-card__feedback-label, .quiz-feedback'));
+        for (const fbContainer of fbContainers) {
+            if (!isVisible(fbContainer)) continue;
+
+            const card = fbContainer.closest('.quiz-card, .quiz-item__card, .question-container, [class*="quiz-question"]');
+            if (!card) continue;
+
+            let titleEl = card.querySelector('.quiz-card__title, [class*="quiz-card__title"], .quiz-question__title, [class*="question-title"]');
+            if (!titleEl) titleEl = card.querySelector('h1, h2, h3, h4, legend');
+            const currentQId = titleEl ? (titleEl.innerText || titleEl.textContent).trim() : lastSolvedQuestion;
+
+            if (currentQId && lastAttempt[currentQId]) {
+                    const fbText = (fbContainer.innerText || fbContainer.textContent || '').trim().toLowerCase();
+
+                    // Skip error banners that contain the word "correct" or "answer"
+                    if (fbText.includes('please answer') || fbText.includes('requires a correct answer')) {
+                        continue;
+                    }
+
+                    if (fbText.includes('correct')) {
+                        const result = fbText.includes('incorrect') ? 'Incorrect' : 'Correct';
+                        sendDebug(`Feedback Tracker: Found ${result} for Q: ${currentQId.substring(0,20)}`);
+
+                        const guessStr = typeof lastAttempt[currentQId] === 'string'
+                                       ? lastAttempt[currentQId]
+                                       : JSON.stringify(lastAttempt[currentQId]);
+
+                        // Try to scrape the revealed correct answer if the course shows it
+                        let revealedCorrect = null;
+                        if (result === 'Incorrect') {
+                            let found = [];
+                            // Try standard specific selectors first
+                            const correctItems = card.querySelectorAll('.is-correct, .quiz-multiple-response-option--correct, .quiz-single-response-option--correct, [class*="--correct"]');
+                            if (correctItems.length > 0) {
+                                correctItems.forEach(item => {
+                                    const textEl = item.querySelector('.quiz-multiple-response-option__text, .quiz-single-response-option__text, [class*="option__text"], p') || item;
+                                    found.push((textEl.innerText || textEl.textContent || '').trim());
+                                });
+                            } else {
+                                // Fallback to scraping checkmark icons explicitly on the card
+                                const checkIcons = card.querySelectorAll('i.icon-Check, i[class*="icon-check"], svg[data-icon="check"]');
+                                checkIcons.forEach(icon => {
+                                    const parentLabel = icon.closest('label, li, [class*="response-option"]');
+                                    if (parentLabel) found.push((parentLabel.innerText || parentLabel.textContent || '').trim());
+                                });
+                            }
+                            if (found.length > 0) revealedCorrect = found.filter(Boolean);
+                        }
+
+                        // Use a timestamp-based key instead of just guess to allow identical retries to be logged
+                        const attemptKey = currentQId + '|' + guessStr + '|' + result;
+
+                        if (!recordedAttempts.has(attemptKey)) {
+                            recordedAttempts.add(attemptKey);
+                            const history = loadHistory();
+                            if (!history[currentQId]) {
+                                history[currentQId] = { type: 'unknown', course: getCourseName(), attempts: [] };
+                            }
+                            if (!history[currentQId].attempts) history[currentQId].attempts = [];
+
+                            history[currentQId].attempts.push({
+                                    guess: guessStr,
+                                    result: result,
+                                    revealedCorrect: revealedCorrect, // log if found
+                                    time: new Date().toISOString()
+                                });
+                                // If we found the correct answer, permanently attach it to the question
+                                if (revealedCorrect) history[currentQId].knownCorrect = revealedCorrect;
+
+                                saveHistory(history);
+
+                                // Also log to pastFailures so the AI knows not to repeat it
+                                if (result === 'Incorrect') {
+                                    if (!pastFailures[currentQId]) pastFailures[currentQId] = new Set();
+                                    pastFailures[currentQId].add(guessStr);
+                                    savePastFailures(pastFailures);
+                                }
+                        }
+                    }
+                }
+            }
+
+        // ── PRIORITY A: Unanswered quiz ────────────────────────
+        if (!isSolving) {
+            const quiz = detectActiveQuiz(attempted);
+            if (quiz && !attempted.has(quiz.id)) {
+                attempted.add(quiz.id);
+                sessionAttempts.add(quiz.id);
+                sendStatus('Reading question...', '#f9e2af');
+                const delay = 1200 + Math.random() * 1200;
+                nextActionTime = now + delay + 1500;
+                setTimeout(() => {
+                    if (!isRunning()) return;
+                    if (quiz.type === 'mcq') solveQuiz(quiz.id, quiz.labels, quiz.submitBtn, quiz.isMulti);
+                    else if (quiz.type === 'fill_in_blank') solveFillInTheBlank(quiz.id, quiz.input, quiz.submitBtn);
+                    else solveMatchingQuestion(quiz.id, quiz.col1, quiz.col2, quiz.submitBtn);
+                }, delay);
+                return;
+            }
+        }
+
+        // ── PRIORITY A1: Handle Submission Errors ──────────────
+        // If the script clicks SUBMIT but the options weren't actually selected
+        // (due to a DOM quirk), Rise shows an error. We must clear `attempted` to retry.
+        if (!isSolving) {
+            const activeCards = Array.from(document.querySelectorAll('.quiz-card--active:not([inert])'));
+            for (const activeCard of activeCards) {
+                const errText = activeCard.innerText.toLowerCase();
+                if (errText.includes('please answer the question to continue') || errText.includes('requires a correct answer to continue')) {
+                    let titleEl = activeCard.querySelector('.quiz-card__title, [class*="quiz-card__title"], .quiz-question__title, [class*="question-title"]');
+                    if (!titleEl) titleEl = activeCard.querySelector('h1, h2, h3, h4, legend');
+                    const errQId = titleEl ? (titleEl.innerText || titleEl.textContent).trim() : '';
+                    if (errQId && attempted.has(errQId)) {
+                        sendDebug('Submission error detected. Clearing attempted state for retry...');
+                        attempted.delete(errQId);
+                        // Briefly pause to prevent tight looping if click repeatedly fails
+                        nextActionTime = now + 3000;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ── PRIORITY A2: Advance past quiz feedback ────────────
+        // After submitting a quiz card, Rise shows "Correct"/"Incorrect" feedback.
+        // For matching questions, the NEXT button can stay aria-disabled even after
+        // "Correct" feedback. Clicking SUBMIT again tells Rise to advance the card.
+        // Only fires when: not solving, feedback label is visible, NEXT is still disabled.
+        if (!isSolving) {
+            const activeCards = Array.from(document.querySelectorAll('.quiz-card--active:not([inert])'));
+            for (const activeCard of activeCards) {
+                const feedbackLabel = activeCard.querySelector('.quiz-card__feedback-label');
+                const fbContainer = feedbackLabel ? feedbackLabel.closest('.quiz-card__feedback') || feedbackLabel : null;
+
+                if (!feedbackLabel || !isVisible(fbContainer)) continue;
+
+                const fbText = (feedbackLabel.innerText || '').trim();
+
+                if (fbText === 'Correct' || fbText === 'Incorrect') {
+                    const nextBtn = activeCard.querySelector('.quiz-card__button--next');
+                    const nextDisabled = !nextBtn || nextBtn.getAttribute('aria-disabled') === 'true' ||
+                                        nextBtn.getAttribute('aria-hidden') === 'true' || !isVisible(nextBtn);
+
+                    // For Incorrect feedback: only advance via SUBMIT if no Take Again is visible
+                    // (otherwise Priority D handles the retry)
+                    const hasTakeAgain = fbText === 'Incorrect' && Array.from(document.querySelectorAll('button, a, [role="button"]')).some(b => {
+                        if (!isVisible(b)) return false;
+                        const t = (b.innerText || b.textContent || '').trim().toUpperCase();
+                        return t.includes('TAKE AGAIN') || t.includes('RETRY') || t === 'TRY AGAIN';
+                    });
+
+                    if (nextDisabled && !hasTakeAgain) {
+                        // Find the SUBMIT button on the active card
+                        const advBtn = Array.from(activeCard.querySelectorAll('button.quiz-card__button')).find(b => {
+                            return isVisible(b) && (b.innerText || '').trim().toUpperCase() === 'SUBMIT';
+                        });
+                        if (advBtn) {
+                            const qTitle = activeCard.querySelector('.quiz-card__title, [class*="quiz-card__title"]');
+                            const titleText = qTitle ? (qTitle.querySelector('p') || qTitle).innerText.trim().substring(0, 50) : 'unknown';
+                            const advKey = 'fb_advance_' + fbText + '_' + titleText;
+
+                            if (!clickedNavs.has(advKey)) {
+                                clickedNavs.add(advKey);
+                                sendStatus(`Advancing past ${fbText} feedback...`, '#89b4fa', true);
+                                if (fbText === 'Incorrect' && lastSolvedQuestion && lastAttempt[lastSolvedQuestion]) {
+                                    if (!pastFailures[lastSolvedQuestion]) pastFailures[lastSolvedQuestion] = new Set();
+                                    pastFailures[lastSolvedQuestion].add(lastAttempt[lastSolvedQuestion]);
+                                    savePastFailures(pastFailures);
+                                }
+                                setTimeout(() => simulateHumanClick(advBtn), 800 + Math.random() * 600);
+                                nextActionTime = now + 2500;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── PRIORITY B: Next question (within multi-Q quiz) ───
+        // ANTI-HIJACK: Never treat SUBMIT as a Next button
+        const nextQBtn = Array.from(document.querySelectorAll(
+            'button.quiz-card__button--next, button[class*="button--next"]'
+        )).find(b => {
+            if (!isVisible(b)) return false;
+            const t = (b.innerText || '').trim().toUpperCase();
+            return t !== 'SUBMIT';
+        });
+
+        if (nextQBtn) {
+            sendStatus('Next question...', '#89b4fa', true);
+            setTimeout(() => simulateHumanClick(nextQBtn), 600 + Math.random() * 700);
+            nextActionTime = now + 2000;
+            return;
+        }
+
+        // ── PRIORITY D: Retry failed quiz (Top Priority over Navigation) ───
+        if (true) {
+            const retryBtn = Array.from(document.querySelectorAll('button, a, [role="button"]')).find(b => {
+                if (!isVisible(b)) return false;
+                const t = (b.innerText || b.textContent || '').trim().toUpperCase();
+                if (!t.includes('TAKE AGAIN') && !t.includes('RETRY') && t !== 'TRY AGAIN') return false;
+
+                // Don't retry if we passed
+                const pageText = document.body.innerText.toUpperCase();
+                let container = b.closest('[class*="result"], [class*="quiz-card"]') || b.parentElement?.parentElement?.parentElement;
+                const cText = container ? container.innerText.toUpperCase() : '';
+
+                if (cText.includes('YOU PASSED') || cText.includes('CONGRATULATIONS') || cText.match(/\bPASSED\b/) || pageText.includes('YOU PASSED') || pageText.includes('CONGRATULATIONS')) {
+                    sendDebug('Quiz passed - ignoring Take Again button.');
+                    return false;
+                }
+
+                if (cText.includes('100%') || pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d]*100%/)) {
+                    sendDebug('Perfect score - ignoring Take Again button.');
+                    return false;
+                }
+
+                const ys = pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d]*(\d+)/);
+                const ps = pageText.match(/(?:PASSING|PASS MARK|PASSING SCORE|PASSING GRADE|TARGET)[^\d]*(\d+)/);
+                if (ys && ps && parseInt(ys[1]) >= parseInt(ps[1])) {
+                    sendDebug(`Score ${ys[1]} >= ${ps[1]} - ignoring Take Again button.`);
+                    return false;
+                }
+
+                const block = b.closest('[id^="block-"]');
+                const docY  = window.scrollY + b.getBoundingClientRect().top;
+                const id    = block ? block.id : 'retry_' + Math.round(docY / 500);
+                if ((takeAgainRetries[id] || 0) >= 15) return false;
+                return true;
+            });
+
+            if (retryBtn) {
+                const block = retryBtn.closest('[id^="block-"]');
+                const docY  = window.scrollY + retryBtn.getBoundingClientRect().top;
+                const id    = block ? block.id : 'retry_' + Math.round(docY / 500);
+
+                let addedAny = false;
+                const history = loadHistory();
+
+                // Add the absolute last solved question just in case
+                if (lastSolvedQuestion && lastAttempt[lastSolvedQuestion]) {
+                    sessionAttempts.add(lastSolvedQuestion);
+                }
+
+                for (const qId of sessionAttempts) {
+                    if (lastAttempt[qId]) {
+                        if (!pastFailures[qId]) pastFailures[qId] = new Set();
+                        pastFailures[qId].add(lastAttempt[qId]);
+                        addedAny = true;
+
+                        // Also add it to history so it shows up in the Logs UI
+                        if (!history[qId]) history[qId] = { type: 'unknown', course: getCourseName(), attempts: [] };
+                        if (!history[qId].attempts) history[qId].attempts = [];
+
+                        const guessStr = typeof lastAttempt[qId] === 'string' ? lastAttempt[qId] : JSON.stringify(lastAttempt[qId]);
+                        history[qId].attempts.push({
+                            guess: guessStr,
+                            result: 'Incorrect (Blind Fail)',
+                            time: new Date().toISOString()
+                        });
+                    }
+                }
+
+                if (addedAny) {
+                    savePastFailures(pastFailures);
+                    saveHistory(history);
+                }
+
+                sendStatus('Retrying failed quiz...', '#f38ba8', true);
+                setTimeout(() => {
+                    simulateHumanClick(retryBtn);
+                    takeAgainRetries[id] = (takeAgainRetries[id] || 0) + 1;
+                    attempted.clear();
+                    sessionAttempts.clear();
+                    isSolving = false;
+                }, 1000);
+                nextActionTime = now + 3500;
+                return;
+            }
+        }
+
+
+        // ── PRIORITY C: Forward navigation (Continue/Next Lesson)
+        const fwdCandidates = [];
+        const fwdSelectors = [
+            'button', 'a', '[role="button"]',
+            'div[data-direction="next"]',
+            '[aria-label*="Next" i]',
+            '[aria-label*="Continue" i]',
+            '[aria-label*="Forward" i]',
+            '.next-btn', '.nav-next', '.right-arrow', '.continue-btn',
+            '[data-continue-btn]', '.overview__button', '.overview-list__link'
+        ].join(', ');
+
+        document.querySelectorAll(fwdSelectors).forEach(el => {
+            if (!isVisible(el)) return;
+            const t = (el.innerText || el.textContent || '').trim().toUpperCase();
+            if (t === 'SUBMIT') return;
+            const cleanT = t.replace(/[^A-Z0-9\s]/g, '').trim();
+            const isTerminal = isTerminalNavLabel(cleanT);
+            const isFwd = !isTerminal && (
+                isKnownForwardLabel(cleanT) ||
+                el.matches('a.lesson-link--next, .next-lesson__link, [data-direction="next"], .overview__button, .continue-btn, [data-continue-btn], [aria-label*="Next" i], [aria-label*="Continue" i], [aria-label*="Start" i], [aria-label*="Resume" i], .overview-list__link, .next-btn, .nav-next, .right-arrow')
+            );
+            if (isFwd) fwdCandidates.push(el);
+        });
+
+        let hasUnlockedFwd = false;
+        for (const el of fwdCandidates) {
+            const locked = el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('locked') || el.classList.contains('continue-hint') || !!el.closest('.is-disabled, [disabled], .locked, [class*="locked"], [aria-disabled="true"]');
+            if (locked) continue;
+            hasUnlockedFwd = true;
+
+            const t = (el.innerText || el.textContent || '').trim().toUpperCase();
+
+            // Rise uses data-block-id for unique block identifiers
+            const block = el.closest('[data-block-id]');
+            const docY  = window.scrollY + el.getBoundingClientRect().top;
+
+            // Generate a unique navId combining position, text, and current page title
+            const heading = document.querySelector('h1, h2, h3, .title');
+            const pageKey = heading ? heading.innerText.trim().substring(0, 20).replace(/\s+/g, '_') : 'page';
+
+            const navId = block ? block.getAttribute('data-block-id') : (pageKey + '_' + t + '_' + Math.round(docY / 500));
+
+            if (clickedNavs.has(navId)) continue;
+            clickedNavs.add(navId);
+
+            // Grab page text right before we navigate away for the course summary feature
+            try { window.top.postMessage({ type: 'SEED_COURSE_TEXT', text: document.body.innerText }, '*'); } catch(e) {}
+
+            // Safe scroll to button if off-screen
+            try {
+                if (el.getBoundingClientRect().bottom > window.innerHeight) {
+                    const scroller = el.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
+                    scroller.scrollTop += 300;
+                }
+            } catch(e) {}
+
+            sendStatus('Advancing...', '#a6e3a1', true);
+            setTimeout(() => simulateHumanClick(el), 800 + Math.random() * 500);
+            nextActionTime = now + 2500;
+            return;
+        }
+
+        // ── PRIORITY C1: Interactive Blocks (Accordions, Tabs, Process, Carousel, Flashcards)
+        // If forward path is locked or absent, click unread interactives to unlock it
+        if (!hasUnlockedFwd) {
+            let clickedInteractive = false;
+            const interactives = document.querySelectorAll(
+                'button.accordion__title-text, ' +
+                'button.tab-nav__item, ' +
+                'button.process-control--next, ' +
+                'button.carousel-slider__control--next, ' +
+                'button.block-carousel__control--next, ' +
+                'button.labeled-graphic-marker, ' +
+                'button.flashcard__turn, ' +
+                'button.blocks-slide-indicator__button, ' +
+                'button.blocks-gallery-grid__image, ' +
+                'button.interactive-grid__item, ' +
+                'label.block-list__option'
+            );
+
+            for (const el of interactives) {
+                if (clickedInteractive || !isVisible(el)) continue;
+                const locked = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                if (locked) continue;
+
+                // Skip tabs/slides that are currently active
+                if (el.classList.contains('tab-nav__item--active') ||
+                    el.classList.contains('is-active') ||
+                    el.classList.contains('blocks-slide-indicator__button--active') ||
+                    el.getAttribute('aria-selected') === 'true' ||
+                    el.getAttribute('aria-current') === 'page') continue;
+
+                // Skip accordions that are already open
+                if (el.getAttribute('aria-expanded') === 'true') continue;
+                // Skip labeled graphic markers that are visited
+                if (el.classList.contains('is-visited')) continue;
+
+                // Skip checkboxes that are already checked
+                if (el.matches('label.block-list__option')) {
+                    const cb = el.querySelector('input[type="checkbox"]');
+                    if (cb && cb.checked) continue;
+                }
+
+                const block = el.closest('[data-block-id]');
+
+                // For slide dots, strictly enforce forward-only navigation to avoid infinite loops
+                if (el.classList.contains('blocks-slide-indicator__button')) {
+                    const allDots = Array.from((block || document).querySelectorAll('.blocks-slide-indicator__button'));
+                    const activeIdx = allDots.findIndex(d => d.classList.contains('blocks-slide-indicator__button--active') || d.getAttribute('aria-current') === 'page');
+                    const myIdx = allDots.indexOf(el);
+                    if (myIdx <= activeIdx) continue;
+                }
+
+                let t = (el.innerText || el.textContent || '').trim().substring(0, 30);
+                if (!t) t = (el.getAttribute('aria-label') || '').trim().substring(0, 30);
+
+                // Identifier uses block-id AND text so we can hit multiple tabs/accordions in same block
+                const intId = (block ? block.getAttribute('data-block-id') : 'int_' + Math.round(window.scrollY + el.getBoundingClientRect().top)) + '_' + t;
+
+                const tries = interactedBlocks[intId] || 0;
+                if (tries >= 15) continue; // safety fallback for looping carousels/processes
+                interactedBlocks[intId] = tries + 1;
+                clickedInteractive = true;
+
+                // Safe scroll
+                try {
+                    if (el.getBoundingClientRect().bottom > window.innerHeight) {
+                        const scroller = el.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
+                        scroller.scrollTop += 300;
+                    }
+                } catch(e) {}
+
+                sendStatus('Completing interactive block...', '#f9e2af', true);
+                setTimeout(() => simulateHumanClick(el), 600 + Math.random() * 400);
+                nextActionTime = now + 1500;
+                return;
+            }
+        }
+
+        // -- PRIORITY E: Video (only if navigation is blocked) ---
+        if (!hasUnlockedFwd) {
+            const medias = Array.from(document.querySelectorAll('video, audio'));
+            const playBtns = Array.from(document.querySelectorAll('.vjs-big-play-button, button[aria-label="Play Video"], button[class*="play"], .plyr__control--overlaid, .ytp-large-play-button, [aria-label*="Play" i]')).filter(b => isVisible(b));
+
+            if (medias.length > 0 || playBtns.length > 0) {
+                // SCORM Fast-Forward Hack: If we are stuck on a SCORM page (e.g. forced video), forcefully tell the SCORM API we are done.
+                try {
+                    const scormScript = document.createElement('script');
+                    scormScript.textContent = SCORM_COMPLETE_PAYLOAD;
+                    document.body.appendChild(scormScript);
+                    setTimeout(() => { try { scormScript.remove(); } catch(e){} }, 500);
+                } catch (e) {}
+            }
+
+            // If we have a direct play button for an iframe/embed
+            for (const pb of playBtns) {
+                const block = pb.closest('[id^="block-"]') || pb.parentElement;
+                const docY  = window.scrollY + pb.getBoundingClientRect().top;
+                const mediaId = block ? (block.id || 'pb_' + Math.round(docY / 500)) : ('pb_' + Math.round(docY / 500));
+
+                if (watchedMedia.has(mediaId)) continue;
+
+                const att = mediaRetries[mediaId] || 0;
+                if (att >= 3) { watchedMedia.add(mediaId); continue; }
+                mediaRetries[mediaId] = att + 1;
+
+                sendStatus(`Clicking Play button (attempt ${att + 1})...`, '#f9e2af', true);
+                setTimeout(() => simulateHumanClick(pb), 800);
+                nextActionTime = now + 4000;
+                return;
+            }
+
+            // Normal <video> tag logic
+            for (let i = 0; i < medias.length; i++) {
+                    const m = medias[i];
+                    if (m.currentTime > 0 && m.currentTime >= m.duration - 0.5) {
+                        watchedMedia.add('media_' + i);
+                    }
+                    const block   = m.closest('[id^="block-"]') || m.closest('[class*="block-"]') || m.parentElement;
+                    const docY    = window.scrollY + m.getBoundingClientRect().top;
+                    const mediaId = block ? (block.id || block.className || 'media_' + i) : ('media_' + Math.round(docY / 500));
+                    if (watchedMedia.has(mediaId)) continue;
+
+                    const att = mediaRetries[mediaId] || 0;
+                    if (att >= 3) { watchedMedia.add(mediaId); continue; }
+                    mediaRetries[mediaId] = att + 1;
+
+                    sendStatus(`Playing video (attempt ${att + 1})...`, '#f9e2af', true);
+
+                    setTimeout(() => {
+                        let p = m.parentElement, clicked = false;
+                        while (p && p !== document.body && !clicked) {
+                            const pb = p.querySelector('.vjs-big-play-button, button[aria-label="Play Video"], button[class*="play"], .plyr__control--overlaid, .ytp-large-play-button');
+                            if (pb && isVisible(pb)) { simulateHumanClick(pb); clicked = true; }
+                            p = p.parentElement;
+                        }
+                        m.muted = true;
+                        m.play().catch(() => {});
+                        setTimeout(() => {
+                            const d = m.duration;
+                            if (d > 0) {
+                                sendStatus('Scrubbing video...', '#a6e3a1', true);
+                                m.currentTime = d > 10 ? d - 5 : 0;
+                                ['seeking', 'seeked', 'timeupdate'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
+                                m.playbackRate = 16;
+
+                                let checkCount = 0;
+                                const checkEnd = setInterval(() => {
+                                    checkCount++;
+                                    if (m.ended || m.currentTime >= m.duration - 0.5 || checkCount > 20) {
+                                        clearInterval(checkEnd);
+                                        ['timeupdate', 'ended'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
+                                        watchedMedia.add(mediaId);
+                                    }
+                                }, 500);
+                            }
+                        }, 3000);
+                    }, 800);
+
+                    nextActionTime = now + 7000;
+                    return;
+                }
+            }
+
+        // ── PRIORITY F: Locked Continue Button Scroll ───
+        if (!hasUnlockedFwd) {
+            const lockedBtn = fwdCandidates.find(el => {
+                const locked = el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('locked') || el.classList.contains('continue-hint') || !!el.closest('.is-disabled, [disabled], .locked, [class*="locked"], [aria-disabled="true"]');
+                return locked && isVisible(el);
+            });
+            if (lockedBtn) {
+                const rect = lockedBtn.getBoundingClientRect();
+                if (rect.bottom > window.innerHeight - 100) {
+                    sendStatus('Scrolling to locked Continue button...', '#f9e2af', true);
+                    const scroller = lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
+                    scroller.scrollTop += 250;
+                    nextActionTime = now + 1500;
+                    return;
+                }
+            }
+        }
+
+        if (hasUnlockedFwd) {
+            stuckSince = 0;
+            sendStatus('Forward path open — waiting for transition...', '#a6e3a1', true);
+        } else {
+            if (!stuckSince) stuckSince = now;
+            // Only probe for unsupported surfaces after 5s idle, so normal
+            // handlers and page transitions get first chance.
+            if (now - stuckSince >= 5000) {
+                const unhandled = detectUnhandledAdapter();
+                if (unhandled && reportUnhandledAdapter(unhandled)) return;
+            }
+            // Recognized adapters win first; any other real stall pauses by 15s.
+            if (now - stuckSince >= 15000) {
+                if (reportUnknownIdle()) return;
+            }
+            sendStatus('Idle - nothing actionable found on this page.', '#bac2de', true);
+        }
+
+    }, 1000);
+
+
+    // =========================================================
+    // 8. MCQ SOLVER
+    // =========================================================
+    function solveQuiz(questionId, optionLabels, submitBtn, isMulti = true) {
+        isSolving = true;
+
+        const hist = loadHistory();
+        if (!hist[questionId]) {
+            hist[questionId] = {
+                type: isMulti ? 'multiple_choice' : 'single_choice',
+                course: getCourseName(),
+                attempts: []
+            };
+            saveHistory(hist);
+        }
+
+        // ✅ Confirmed clean text selector from live HTML
+        const getText = el => {
+            const textEl = el.querySelector(
+                '.quiz-multiple-response-option__text p, .quiz-multiple-response-option__text, ' +
+                '.quiz-single-response-option__text p, .quiz-single-response-option__text, ' +
+                '[class*="option-text"] p, [class*="option-text"], [class*="__text"] p, [class*="__text"]'
+            );
+            return (textEl ? textEl.innerText || textEl.textContent : el.innerText || el.textContent || '').trim();
+        };
+
+        // Detect which options are pre-selected (could be a wrong prior attempt)
+        const isChecked = el => {
+            const input = el.querySelector('input');
+            if (input) return input.checked;
+
+            const innerCb = el.querySelector('[role="checkbox"], [role="radio"]');
+            if (innerCb && innerCb.getAttribute('aria-checked') === 'true') return true;
+            if (el.getAttribute('aria-checked') === 'true') return true;
+
+            return el.classList.contains('--selected') || el.classList.contains('is-selected') ||
+                   el.querySelector('[class*="--selected"], [class*="is-selected"]') !== null;
+        };
+        const preSelected = optionLabels.map((el, i) => isChecked(el) ? i + 1 : null).filter(Boolean);
+
+        const optionTexts = optionLabels.map((el, i) => {
+            const sel = preSelected.includes(i + 1) ? ' [currently selected]' : '';
+            return `${i + 1}. ${getText(el)}${sel}`;
+        });
+
+        // Build prompt — explicitly state single vs multi, and warn about pre-selections
+        const typeInstruction = isMulti
+            ? 'This is a MULTIPLE ANSWER question (checkboxes). Select ALL correct answers. Output ALL correct numbers separated by commas, e.g. 1,3,5'
+            : 'This is a SINGLE ANSWER question (radio button). Select EXACTLY ONE answer. Output only ONE number, e.g. 3';
+
+        const sysMsg = isMulti
+            ? 'You are an automated quiz solver. Output ONLY the correct option number(s) as digits separated by commas. NO WORDS. NO EXPLANATIONS. ANY TEXT OTHER THAN DIGITS AND COMMAS WILL CRASH THE SYSTEM.'
+            : 'You are an automated quiz solver. Output ONLY ONE digit for the single correct answer. NO WORDS. NO EXPLANATIONS. ANY TEXT OTHER THAN A DIGIT WILL CRASH THE SYSTEM.';
+
+        let userMsg = `Question: ${questionId}\n\n${optionTexts.join('\n')}\n\n${typeInstruction}`;
+
+        let pageContext = "";
+        try {
+            const allText = document.body.innerText || '';
+            const qIndex = allText.indexOf(questionId);
+            if (qIndex > -1) {
+                pageContext = allText.substring(0, qIndex).trim();
+            } else {
+                pageContext = allText.trim();
+            }
+            if (pageContext.length > 2500) pageContext = pageContext.substring(pageContext.length - 2500);
+        } catch(e) {}
+
+        if (pageContext && pageContext.length > 50) {
+            userMsg += `\n\n--- BACKGROUND COURSE TEXT ---\n${pageContext}\n--- END BACKGROUND TEXT ---\n\nCRITICAL: Output ONLY a comma-separated list of digits for the answer. Nothing else. Do NOT include any explanations or chain of thought.`;
+        }
+
+        if (preSelected.length > 0) {
+            userMsg += `\n\nNOTE: Options marked [currently selected] may be wrong pre-selections from a prior attempt. Your answer completely overrides them — include an option only if it is truly correct.`;
+        }
+
+        const fails = pastFailures[questionId];
+        if (fails && fails.size > 0) {
+            userMsg += `\n\nWARNING — these exact answer combinations were already tried and marked WRONG. Do NOT repeat them:\n`;
+            for (const f of fails) { try { userMsg += `  - ${JSON.parse(f).join(', ')}\n`; } catch(e) {} }
+            sendDebug(`Injecting ${fails.size} past failures into prompt for Q: ${questionId.substring(0,20)}`);
+        } else {
+            sendDebug(`No past failures found for Q: ${questionId.substring(0,20)}`);
+        }
+
+        sendStatus(`Solving ${isMulti ? 'multi' : 'single'}-select (${optionLabels.length} opts${preSelected.length ? ', ' + preSelected.length + ' pre-sel' : ''})...`, '#89b4fa');
+
+                    const clickTargetFor = el => {
+                        const target = el.querySelector('[role="checkbox"], [role="radio"], input[type="checkbox"], input[type="radio"]') || el;
+                        sendDebug(`Target identified for clicking: ${target.tagName} | class: ${target.className} | role: ${target.getAttribute('role')}`);
+                        return target;
+                    };
+
+                    const applyNums = async (nums) => {
+                        if (nums.length === 0) {
+                            sendStatus('Could not parse AI answer. Retrying in 5s...', '#f38ba8');
+                            setTimeout(() => { isSolving = false; attempted.delete(questionId); }, 5000);
+                            return;
+                        }
+
+                        const plain = optionLabels.map(el => getText(el));
+                        lastAttempt[questionId] = JSON.stringify(nums.map(n => plain[n - 1]));
+                        lastSolvedQuestion = questionId;
+                        sendStatus(`✓ Selecting: ${nums.join(', ')}`, '#a6e3a1');
+
+                        (async () => {
+                            try {
+                                // Iterate ALL options: check ones AI picked, uncheck ones AI did not pick
+                                for (let i = 0; i < optionLabels.length; i++) {
+                                    const el = optionLabels[i];
+                                    if (!el) continue;
+                                    const num = i + 1;
+                                    const shouldBeSelected = nums.includes(num);
+                                    const currentlySelected = isChecked(el);
+
+                                    sendDebug(`Option ${num}: shouldBeSelected=${shouldBeSelected}, currentlySelected=${currentlySelected}`);
+
+                                    if (shouldBeSelected && !currentlySelected) {
+                                        el.style.outline = '2px solid #a6e3a1';
+
+                                        const target = clickTargetFor(el);
+                                        simulateHumanClick(target);
+                                        if (target !== el) simulateHumanClick(el);
+                                        const textEl = el.querySelector('[class*="__text"]');
+                                        if (textEl) simulateHumanClick(textEl);
+
+                                        // Fallback
+                                        const input = el.querySelector('input');
+                                        if (input && !input.checked) {
+                                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked").set;
+                                            if (nativeInputValueSetter) nativeInputValueSetter.call(input, true);
+                                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }
+
+                                        await sleep(700 + Math.random() * 500);
+                                    } else if (!shouldBeSelected && currentlySelected) {
+                                        el.style.outline = '2px solid #f38ba8';
+
+                                        const target = clickTargetFor(el);
+                                        simulateHumanClick(target);
+                                        if (target !== el) simulateHumanClick(el);
+                                        const textEl = el.querySelector('[class*="__text"]');
+                                        if (textEl) simulateHumanClick(textEl);
+
+                                        // Fallback
+                                        const input = el.querySelector('input');
+                                        if (input && input.checked) {
+                                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked").set;
+                                            if (nativeInputValueSetter) nativeInputValueSetter.call(input, false);
+                                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }
+
+                                        await sleep(600 + Math.random() * 400);
+                                    }
+                                }
+
+                                if (AUTO_SUBMIT_QUIZ) {
+                                    await sleep(1200 + Math.random() * 800);
+                                    if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+                                }
+                                isSolving = false;
+                            } catch (err) {
+                                sendDebug('ERROR in applyNums: ' + err.toString());
+                                isSolving = false;
+                            }
+                        })();
+                    };
+
+        const history = loadHistory();
+        const past = history[questionId];
+        if (past) {
+            let correctStrs = null;
+            if (past.knownCorrect && past.knownCorrect.length > 0) correctStrs = past.knownCorrect;
+            else {
+                const correctAttempt = past.attempts.find(a => a.result === 'Correct');
+                if (correctAttempt) {
+                    try { correctStrs = JSON.parse(correctAttempt.guess); } catch(e) { correctStrs = [correctAttempt.guess]; }
+                }
+            }
+            if (correctStrs && Array.isArray(correctStrs)) {
+                const cachedNums = [];
+                const plainOpts = optionLabels.map(el => getText(el));
+                for (const str of correctStrs) {
+                    const idx = plainOpts.findIndex(o => o.trim() === str.trim());
+                    if (idx !== -1) cachedNums.push(idx + 1);
+                }
+                if (cachedNums.length > 0) {
+                    sendDebug('CACHE HIT: ' + cachedNums.join(', '));
+                    applyNums(cachedNums);
+                    return;
+                }
+            }
+        }
+
+        callOpenRouter(sysMsg, userMsg, 0, (aiText) => {
+            sendDebug('AI: "' + aiText.slice(0, 80) + '"');
+            let nums = parseNumbers(aiText, optionLabels.length);
+            if (!isMulti && nums.length > 1) {
+                sendDebug(`Single-select: AI gave ${nums.length}, capping to 1 (${nums[0]})`);
+                nums = [nums[0]];
+            }
+            if (nums.length === 0 && !isMulti && optionLabels.length > 0) nums = [1];
+            applyNums(nums);
+        });
+    }
+
+
+    // =========================================================
+    // 9. FILL IN THE BLANK SOLVER
+    // =========================================================
+    async function solveFillInTheBlank(questionId, inputEl, submitBtn) {
+        isSolving = true;
+        sendStatus('Answering fill-in-the-blank...', '#f9e2af');
+
+        const typeInstruction = 'This is a fill-in-the-blank question. Output exactly the text or number that belongs in the blank. Do not write full sentences. If it asks for a number, just write the number. Do NOT wrap your answer in quotes or extra punctuation.';
+        const sysMsg = 'You are a quiz solver. Output only the short text/number for the blank. No explanations.';
+        let userMsg = `Question: ${questionId}\n\n${typeInstruction}`;
+
+        let pageContext = "";
+        try {
+            const allText = document.body.innerText || '';
+            const qIndex = allText.indexOf(questionId);
+            if (qIndex > -1) {
+                pageContext = allText.substring(0, qIndex).trim();
+            } else {
+                pageContext = allText.trim();
+            }
+            if (pageContext.length > 4000) {
+                pageContext = "..." + pageContext.substring(pageContext.length - 4000);
+            }
+        } catch (e) {}
+
+        if (pageContext && pageContext.length > 50) {
+            userMsg = `--- COURSE CONTEXT ---\nHere is the text from the lesson just before the question appeared. Use this to help find the answer:\n${pageContext}\n----------------------\n\n` + userMsg;
+        }
+
+        const fails = pastFailures[questionId];
+        if (fails && fails.size > 0) {
+            userMsg += `\n\nWARNING — these exact answers were already tried and marked WRONG. Do NOT repeat them:\n`;
+            for (const f of fails) { try { userMsg += `  - ${JSON.parse(f).join(', ')}\n`; } catch(e) {} }
+        }
+
+        const applyAnswer = async (answer) => {
+            // To properly type in React/Rise:
+            inputEl.focus();
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+            if (nativeInputValueSetter) {
+                nativeInputValueSetter.call(inputEl, answer);
+            } else {
+                inputEl.value = answer;
+            }
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+            inputEl.blur();
+
+            // Log attempt
+            lastAttempt[questionId] = [answer];
+            attempted.add(questionId);
+
+            // Re-render logs
+            const hist = loadHistory();
+            if (!hist[questionId]) hist[questionId] = { q: questionId, type: 'fill_in_blank', attempts: [] };
+            hist[questionId].status = `Attempted`;
+            saveHistory(hist);
+
+            if (AUTO_SUBMIT_QUIZ) {
+                await sleep(1200 + Math.random() * 800);
+                if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+            }
+            isSolving = false;
+        };
+
+        // Check Cache
+        const history = loadHistory();
+        const past = history[questionId];
+        if (past) {
+            let cachedAnswer = null;
+            if (past.knownCorrect && past.knownCorrect[0]) cachedAnswer = past.knownCorrect[0];
+            else {
+                const correctAttempt = past.attempts.find(a => a.result === 'Correct');
+                if (correctAttempt) {
+                    try {
+                        const guessArr = JSON.parse(correctAttempt.guess);
+                        if (guessArr && guessArr.length > 0) cachedAnswer = guessArr[0];
+                    } catch(e) { cachedAnswer = correctAttempt.guess; }
+                }
+            }
+            if (cachedAnswer) {
+                sendDebug('CACHE HIT: "' + cachedAnswer + '"');
+                await applyAnswer(cachedAnswer);
+                return;
+            }
+        }
+
+        callOpenRouter(sysMsg, userMsg, 0, async (aiText) => {
+            const answer = aiText.trim();
+            sendDebug('AI: "' + answer + '"');
+            await applyAnswer(answer);
+        });
+    }
+
+    // =========================================================
+    // 10. MATCHING SOLVER
+    // col1 = draggable left pieces (ul.matching-interaction-col-1 buttons)
+    // col2 = droppable right pieces (ul.matching-interaction-col-2 buttons)
+    // =========================================================
+    async function solveMatchingQuestion(questionId, col1, col2, submitBtn) {
+        isSolving = true;
+        sendStatus('Analysing matching question...', '#f9e2af');
+
+        // ✅ Confirmed text selector from live HTML:
+        // .matching-interaction-piece-content span — actual text only, no "Selectable item" noise
+        const getPieceText = el => {
+            if (!el || !el.querySelector) return '';
+            const span = el.querySelector('.matching-interaction-piece-content span, [data-matching-interaction-piece-content-inline] span');
+            return span ? span.innerText.trim() : (el.innerText || '').replace(/Selectable item/gi, '').trim();
+        };
+
+        // Read existing match state.
+        // When a piece is pre-matched, Rise adds:
+        //   aria-pressed="true" + class "matching-interaction-piece--matched"
+        //   AND a visually-hidden span: "Matched with <span>X</span>"
+        const getCurrentMatchText = btn => {
+            const spans = Array.from(btn.querySelectorAll('span.visually-hidden-always'));
+            for (const s of spans) {
+                const raw = (s.innerText || s.textContent || '').trim();
+                if (raw.toLowerCase().startsWith('matched with')) {
+                    // innerText of nested span is the match target name
+                    const nested = s.querySelector('span');
+                    return nested ? nested.innerText.trim() : raw.replace(/matched with\s*/i, '').trim();
+                }
+            }
+            return null;
+        };
+
+        const col1Texts = col1.map(el => getPieceText(el));
+        const col2Texts = col2.map(el => getPieceText(el));
+
+        // Build prompt lines — annotate pre-matched items
+        const LT = col1.map((el, i) => {
+            const cur = getCurrentMatchText(el);
+            const note = cur ? ` [currently matched with: ${cur}]` : '';
+            return `L${i + 1}: ${col1Texts[i]}${note}`;
+        });
+        const RT = col2.map((el, i) => `R${i + 1}: ${col2Texts[i]}`);
+
+        if (!LT.length || !RT.length) {
+            sendStatus('Could not read matching columns.', '#f38ba8');
+            isSolving = false;
+            return;
+        }
+
+        // Count pre-matched
+        const preMatchedCount = col1.filter(el => el.getAttribute('aria-pressed') === 'true').length;
+        sendDebug(`Matching L(${LT.length}) R(${RT.length}) pre-matched(${preMatchedCount})`);
+
+        let userMsg = `Left items (drag these):\n${LT.join('\n')}\n\nRight items (drop targets):\n${RT.join('\n')}`;
+
+        if (preMatchedCount > 0) {
+            userMsg += `\n\nNOTE: Items marked [currently matched with: X] are pre-selected from a prior attempt and may be WRONG. Provide ALL correct pairings — your answer overrides any existing state.`;
+        }
+
+        const fails = pastFailures[questionId];
+        if (fails && fails.size > 0) {
+            userMsg += `\n\nWARNING — these exact pairings were already tried and WRONG:\n`;
+            for (const f of fails) { try { userMsg += `  - ${JSON.parse(f).join(' | ')}\n`; } catch(e) {} }
+        }
+        userMsg += `\n\nOutput ONLY pairs as L#,R# one per line. Example:\nL1,R3\nL2,R1\nL3,R2`;
+
+        sendStatus('Asking AI for matches...', '#89b4fa');
+
+        callOpenRouter(
+            'You solve matching quizzes. Output ONLY pairs as L#,R# one per line. No words, no explanations.',
+            userMsg,
+            0,
+            async (aiText) => {
+                const cleaned = aiText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+                const pairs   = [...cleaned.matchAll(/L(\d+)\s*[,→\-:]\s*R(\d+)/gi)];
+
+                if (!pairs.length) {
+                    sendStatus('AI parse fail on matching. Retrying in 5s...', '#f38ba8');
+                    setTimeout(() => { isSolving = false; attempted.delete(questionId); }, 5000);
+                    return;
+                }
+
+                const labelLines = pairs.map(([, l, r]) =>
+                    `${col1Texts[+l - 1] || '?'} ➔ ${col2Texts[+r - 1] || '?'}`
+                );
+
+                // Log question options if new
+                const history = loadHistory();
+                if (!history[questionId]) {
+                    history[questionId] = {
+                        type: 'matching',
+                        course: getCourseName(),
+                        left: col1Texts,
+                        right: col2Texts,
+                        attempts: []
+                    };
+                    saveHistory(history);
+                }
+
+                sendMatches(labelLines.join('\n'));
+                lastAttempt[questionId] = JSON.stringify(labelLines);
+                lastSolvedQuestion = questionId;
+
+                sendStatus(`Dragging ${pairs.length} pairs...`, '#89b4fa');
+                for (const [, ls, rs] of pairs) {
+                    const L = col1[+ls - 1], R = col2[+rs - 1];
+                    if (!L || !R) continue;
+
+                    // Skip drag if this exact pair is already correctly matched
+                    const existingMatch = getCurrentMatchText(L);
+                    const targetText = col2Texts[+rs - 1];
+                    if (existingMatch && existingMatch.toLowerCase() === targetText.toLowerCase()) {
+                        sendDebug(`Already correct: ${col1Texts[+ls - 1]} ↔ ${targetText} — skipping drag`);
+                        continue;
+                    }
+
+                    await simulateDrag(L, R);
+                    await sleep(450 + Math.random() * 400);
+                }
+
+                sendStatus('Matched! Submitting...', '#a6e3a1');
+                await sleep(1200 + Math.random() * 800);
+                if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+                isSolving = false;
+            }
+        );
+    }
+
+
+    // =========================================================
+    // 10. DRAG SIMULATOR
+    // =========================================================
+    async function simulateDrag(src, tgt) {
+        const handle = src.querySelector('[class*="handle"], [aria-roledescription="sortable"], [data-rbd-drag-handle-draggable-id], svg') || src;
+        const sr = handle.getBoundingClientRect(), tr = tgt.getBoundingClientRect();
+        const sx = sr.left + sr.width / 2, sy = sr.top + sr.height / 2;
+        const tx = tr.left + tr.width / 2, ty = tr.top + tr.height / 2;
+        const dt = new DataTransfer();
+        const p  = (x, y, btns = 0) => ({ bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, clientX: x, clientY: y, buttons: btns });
+        const m  = (x, y, btns = 0) => ({ bubbles: true, cancelable: true, clientX: x, clientY: y, buttons: btns });
+
+        handle.dispatchEvent(new PointerEvent('pointerover',  p(sx, sy)));
+        handle.dispatchEvent(new PointerEvent('pointerdown',  p(sx, sy, 1)));
+        handle.dispatchEvent(new MouseEvent('mousedown',      m(sx, sy, 1)));
+        handle.dispatchEvent(new DragEvent('dragstart',  { bubbles: true, cancelable: true, dataTransfer: dt, clientX: sx, clientY: sy }));
+        await sleep(60);
+
+        for (let i = 1; i <= 12; i++) {
+            const cx = sx + (tx - sx) * i / 12, cy = sy + (ty - sy) * i / 12;
+            document.dispatchEvent(new PointerEvent('pointermove', p(cx, cy, 1)));
+            document.dispatchEvent(new MouseEvent('mousemove',     m(cx, cy, 1)));
+            if (i === 12) {
+                tgt.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: cx, clientY: cy }));
+                tgt.dispatchEvent(new DragEvent('dragover',  { bubbles: true, cancelable: true, dataTransfer: dt, clientX: cx, clientY: cy }));
+            }
+            await sleep(20);
+        }
+
+        tgt.dispatchEvent(new DragEvent('drop',    { bubbles: true, cancelable: true, dataTransfer: dt, clientX: tx, clientY: ty }));
+        document.dispatchEvent(new PointerEvent('pointerup', p(tx, ty, 0)));
+        document.dispatchEvent(new MouseEvent('mouseup',     m(tx, ty, 0)));
+        handle.dispatchEvent(new DragEvent('dragend',  { bubbles: true, cancelable: true, dataTransfer: dt, clientX: tx, clientY: ty }));
+    }
+
+    // =========================================================
+    // 11. NUMBER PARSER
+    // =========================================================
+    function parseNumbers(text, max) {
+        if (!text) return [];
+        const clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\|thinking\|>[\s\S]*?<\/\|thinking\|>/gi, '').trim();
+        for (const line of clean.split('\n').map(l => l.trim()).filter(Boolean)) {
+            if (/^[\d,\s]+$/.test(line)) {
+                const nums = (line.match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= max);
+                if (nums.length) return [...new Set(nums)];
+            }
+        }
+        const m = clean.match(/ANSWER[:\s]+([\d,\s]+)/i);
+        if (m) {
+            const nums = (m[1].match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= max);
+            if (nums.length) return [...new Set(nums)];
+        }
+        const all = (clean.match(/\b\d+\b/g) || []).map(Number).filter(n => n >= 1 && n <= max);
+        return [...new Set(all)];
+    }
+
+    // =========================================================
+    // 12. OPENROUTER
+    // =========================================================
+    function parseResponse(raw) {
+        try {
+            const d = JSON.parse(raw);
+            if (d.error) return { error: d.error.message };
+            if (d.choices?.[0]) return { text: d.choices[0].message?.content?.trim() || '' };
+        } catch(_) {}
+        let out = '';
+        for (const line of raw.split('\n')) {
+            const t = line.trim();
+            if (!t.startsWith('data:')) continue;
+            const j = t.slice(5).trim();
+            if (j === '[DONE]') continue;
+            try {
+                const c = JSON.parse(j);
+                if (c.error) return { error: c.error.message };
+                const d = c.choices?.[0]?.delta?.content;
+                if (d) out += d;
+            } catch(_) {}
+        }
+        return { text: out.trim() };
+    }
+
+    function callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry = 0) {
+        const apiKey = getOpenRouterApiKey();
+        if (!apiKey) { isSolving = false; sendStatus('Set an OpenRouter key with KEY first.', '#f38ba8'); return; }
+        const model = MODELS[modelIdx] || MODELS[0];
+        sendStatus(retry > 0 ? `Retrying AI (${retry}/3)...` : 'Asking AI...', '#89b4fa');
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'https://openrouter.ai/api/v1/chat/completions',
+            headers: {
+                'Content-Type':  'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+                'HTTP-Referer':  window.location.origin,
+                'X-Title':       'Seed Talent Helper'
+            },
+            data: JSON.stringify({
+                model: model.id,
+                messages: [{ role: 'system', content: sysMsg }, { role: 'user', content: userMsg }],
+                max_tokens: model.maxTok,
+                temperature: 0
+            }),
+            timeout: 30000,
+            onload(res) {
+                const r = parseResponse(res.responseText);
+                if (r.error || !r.text) {
+                    const err = String(r.error || 'empty').toLowerCase();
+                    sendDebug('AI error: ' + err);
+                    const retryable = err.includes('overloaded') || err.includes('503') || err.includes('too many') || err.includes('empty');
+                    if (retry < 3 && retryable) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000 * (retry + 1)); return; }
+                    if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
+                    isSolving = false;
+                    sendStatus('AI unavailable. Please refresh.', '#f38ba8');
+                    return;
+                }
+                onSuccess(r.text);
+            },
+            onerror()  { if (retry < 3) setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); else { isSolving = false; sendStatus('Network error.', '#f38ba8'); } },
+            ontimeout() { if (retry < 3) setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); else { isSolving = false; sendStatus('AI timed out.', '#f38ba8'); } }
+        });
+    }
+
+    // =========================================================
+    // 13. NETWORK SNIFFER — captures the API calls that mark progress.
+    //     Toggle 📡 SNIFF in the panel, manually complete a section,
+    //     then ⬇ DUMP to download the captured requests as JSON.
+    // =========================================================
+    function __seedSnifferPage() {
+        const origFetch = window.fetch;
+        window.fetch = async function() {
+            const args = arguments;
+            let url = '', method = 'GET', reqBody = null;
+            try {
+                if (typeof args[0] === 'string') {
+                    url = args[0]; method = (args[1] && args[1].method) || 'GET';
+                    reqBody = args[1] && args[1].body;
+                } else {
+                    url = args[0].url; method = args[0].method || 'GET';
+                    reqBody = await args[0].clone().text().catch(function(){ return null; });
+                }
+            } catch(e) {}
+            const resp = await origFetch.apply(this, args);
+            try {
+                const clone = resp.clone();
+                const ct = clone.headers.get('content-type') || '';
+                const entry = { frame: location.href, method: method, url: String(url), status: resp.status,
+                                reqBody: reqBody ? String(reqBody).slice(0, 40000) : null, respBody: null };
+                if (ct.indexOf('json') > -1 || ct.indexOf('text') > -1 || ct.indexOf('xml') > -1) {
+                    entry.respBody = (await clone.text()).slice(0, 40000);
+                }
+                window.postMessage({ type: 'SEED_SNIFF_ENTRY', entry: entry }, '*');
+            } catch(e) {}
+            return resp;
+        };
+        const origOpen = XMLHttpRequest.prototype.open;
+        const origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(m, u) {
+            this.__sm = { m: m, u: u };
+            return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(b) {
+            const meta = this.__sm, xhr = this;
+            if (meta) xhr.addEventListener('loadend', function() {
+                try {
+                    let rb = null;
+                    if (!xhr.responseType || xhr.responseType === 'text') rb = String(xhr.responseText).slice(0, 40000);
+                    else if (xhr.responseType === 'json') rb = JSON.stringify(xhr.response).slice(0, 40000);
+                    window.postMessage({ type: 'SEED_SNIFF_ENTRY', entry: {
+                        frame: location.href, method: meta.m, url: String(meta.u), status: xhr.status,
+                        reqBody: b ? String(b).slice(0, 40000) : null, respBody: rb
+                    }}, '*');
+                } catch(e) {}
+            });
+            return origSend.apply(this, arguments);
+        };
+
+        // SCORM API call sniffing — SetValue/Commit are plain JS calls (not network),
+        // so hook the API object itself. It may not exist yet at document-start; poll for it.
+        const scormEntry = function(label, el, val, resp) {
+            try {
+                window.postMessage({ type: 'SEED_SNIFF_ENTRY', entry: {
+                    frame: location.href, method: 'SCORM',
+                    url: 'scorm://' + label + '/' + (el || ''),
+                    status: 0, reqBody: val != null ? String(val).slice(0, 40000) : null,
+                    respBody: resp != null ? String(resp).slice(0, 40000) : null
+                }}, '*');
+            } catch(e) {}
+        };
+        const apiPoll = setInterval(function() {
+            const api = window.API_1484_11 || window.API;
+            if (!api) return;
+            clearInterval(apiPoll);
+            const wrapCall = function(fn, hasEl, hasVal, retIsResp) {
+                if (typeof api[fn] !== 'function') return;
+                const orig = api[fn];
+                api[fn] = function() {
+                    const a = arguments;
+                    const r = orig.apply(this, a);
+                    try { scormEntry(fn, hasEl ? a[0] : fn, hasVal ? a[1] : null, retIsResp ? r : null); } catch(e) {}
+                    return r;
+                };
+            };
+            // SCORM 2004
+            wrapCall('SetValue', true, true, false);
+            wrapCall('GetValue', true, false, true);
+            wrapCall('Commit', false, false, false);
+            wrapCall('Terminate', false, false, false);
+            // SCORM 1.2
+            wrapCall('LMSSetValue', true, true, false);
+            wrapCall('LMSGetValue', true, false, true);
+            wrapCall('LMSCommit', false, false, false);
+            wrapCall('LMSFinish', false, false, false);
+            scormEntry('API_FOUND', window.API_1484_11 ? 'SCORM_2004' : 'SCORM_1.2', null, null);
+        }, 500);
+        setTimeout(function(){ clearInterval(apiPoll); }, 120000);
+    }
+
+    // Inject hooks into PAGE context (the userscript sandbox's window.fetch isn't the page's)
+    try {
+        const snifferScript = document.createElement('script');
+        snifferScript.textContent = '(' + __seedSnifferPage.toString() + ')();';
+        (document.documentElement || document.head || document.body).appendChild(snifferScript);
+        setTimeout(function(){ try { snifferScript.remove(); } catch(e){} }, 1000);
+    } catch(e) {}
+
+    // Relay page-context entries up to the top frame (only when enabled)
+    window.addEventListener('message', (e) => {
+        if (!e.data) return;
+        if (e.data.type === 'SEED_SNIFF_SET') {
+            sniffOn = !!e.data.on;
+            // Forward deeper so nested iframes get the toggle too
+            document.querySelectorAll('iframe').forEach(f => {
+                try { f.contentWindow.postMessage({ type: 'SEED_SNIFF_SET', on: sniffOn }, '*'); } catch(_) {}
+            });
+        }
+        if (e.data.type === 'SEED_SNIFF_ENTRY' && sniffOn) {
+            try { window.top.postMessage({ type: 'SEED_SNIFF_AGG', entry: e.data.entry }, '*'); } catch(_) {}
+        }
+    });
+
+    // Top frame: aggregate entries, filter static assets, surface in debug line
+    if (window === window.top) {
+        const STATIC_RE = /\.(css|js|png|jpe?g|gif|svg|woff2?|ttf|mp4|webm|mp3|ico)(\?|#|$)/i;
+        window.addEventListener('message', (e) => {
+            if (!e.data || e.data.type !== 'SEED_SNIFF_AGG') return;
+            const en = e.data.entry;
+            if (!en || STATIC_RE.test(en.url)) return;
+            sniffEntries.push(en);
+            if (sniffEntries.length > 2000) sniffEntries.shift();
+            sendDebug('[SNIFF] ' + en.method + ' ' + en.status + ' ' + String(en.url).slice(0, 110));
+        });
+    }
+
+})();
