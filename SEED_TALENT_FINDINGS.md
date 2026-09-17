@@ -305,6 +305,12 @@ Three gaps closed in v9.18:
 
 Note: `navId` for elements without `data-block-id` embeds `docY`, so scroll drift still regenerates ids — the retry cap primarily bounds block-id'd claims, which is where the observed dead-locks occurred. Also documented: SNIFF's `suspend_data` writes during the stall confirmed course-side progress recording was healthy; the dead-lock was purely DOM-side.
 
+### Checkbox-list double-toggle + pacing pass (v9.19)
+
+A stall on a different course (Birchmount Gift Card, UTR 2811259 — "(Read and select each box to move on)") exposed the same double-fire defect on `label.block-list__option`: `simulateHumanClick` dispatches a `click` event **and** calls `el.click()` — on a `<label>` each triggers activation behavior on the inner checkbox, so the box toggles twice per attempt (net unchecked). The checked-skip guard then never fires; 15 retries exhaust into the locked-scroll loop. v9.19 clicks the inner `input` once (single native toggle; falls back to one `el.click()` when no input is present).
+
+Same version trims the deliberate human-pacing delays roughly in half (jitter preserved): forward-nav click 800–1300→350–650ms + window 2500→1500ms; interactive click 600–1000→250–500ms + window 1500→900ms; quiz feedback-advance 800–1400→400–700ms + 2500→1500ms; next-question 600–1300→350–700ms + 2000→1200ms; take-again retry 1000→500ms + 3500→2000ms; embed play-button 800→400ms + 4000→2000ms; pre-solve "reading" pause 1200–2400→500–1000ms + window 1500→800ms. Untouched: the 7s video attempt window and watchdog (playback is genuinely time-bound on anti-skip players) and AI retry backoff (rate-limit semantics). Remaining perceived slowness on video lessons is the ~2× clamped real-time playback, not delay code.
+
 ### Known solver limitations
 
 - It currently requires the question and controls to be rendered in the DOM.

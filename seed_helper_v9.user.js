@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.18
+// @version      9.19
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.18</span>
+            <span>🤖 Seed Helper v9.19</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.18').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.19').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.18',
+            helperVersion: '9.19',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1533,8 +1533,8 @@
                 sessionAttempts.add(quiz.id);
                 activeSolveQId = quiz.id;
                 sendStatus('Reading question...', '#f9e2af');
-                const delay = 1200 + Math.random() * 1200;
-                nextActionTime = now + delay + 1500;
+                const delay = 500 + Math.random() * 500;
+                nextActionTime = now + delay + 800;
                 setTimeout(() => {
                     if (!isRunning()) {
                         attempted.delete(quiz.id);
@@ -1618,8 +1618,8 @@
                                     pastFailures[lastSolvedQuestion].add(lastAttempt[lastSolvedQuestion]);
                                     savePastFailures(pastFailures);
                                 }
-                                setTimeout(() => simulateHumanClick(advBtn), 800 + Math.random() * 600);
-                                nextActionTime = now + 2500;
+                                setTimeout(() => simulateHumanClick(advBtn), 400 + Math.random() * 300);
+                                nextActionTime = now + 1500;
                                 return;
                             }
                         }
@@ -1640,8 +1640,8 @@
 
         if (nextQBtn) {
             sendStatus('Next question...', '#89b4fa', true);
-            setTimeout(() => simulateHumanClick(nextQBtn), 600 + Math.random() * 700);
-            nextActionTime = now + 2000;
+            setTimeout(() => simulateHumanClick(nextQBtn), 350 + Math.random() * 350);
+            nextActionTime = now + 1200;
             return;
         }
 
@@ -1729,8 +1729,8 @@
                     sessionAttempts.clear();
                     Object.keys(quizSolveFails).forEach(k => delete quizSolveFails[k]);
                     isSolving = false;
-                }, 1000);
-                nextActionTime = now + 3500;
+                }, 500);
+                nextActionTime = now + 2000;
                 return;
             }
         }
@@ -1803,8 +1803,8 @@
             } catch(e) {}
 
             sendStatus('Advancing...', '#a6e3a1', true);
-            setTimeout(() => simulateHumanClick(el), 800 + Math.random() * 500);
-            nextActionTime = now + 2500;
+            setTimeout(() => simulateHumanClick(el), 350 + Math.random() * 300);
+            nextActionTime = now + 1500;
             return;
         }
 
@@ -1904,9 +1904,17 @@
                 // sequence + native click double-fires and can skip a step's onStep,
                 // leaving the block permanently incomplete.
                 const isStepperNext = el.matches('button.carousel-controls-next, button.process-control--next, button.carousel-slider__control--next, button.block-carousel__control--next, button.block-flashcards-slider__arrow--next, button.process-counter__btn');
+                // Checkbox-list options must toggle exactly once: simulateHumanClick
+                // dispatches a click event AND calls el.click() — on a <label> each
+                // triggers activation behavior, so the box toggles twice (net unchecked).
+                const isListOption = el.matches('label.block-list__option');
                 sendStatus(isFlashcardGrid ? 'Flipping required card...' : isStepperNext ? 'Advancing process step...' : 'Completing interactive block...', '#f9e2af', true);
-                setTimeout(() => { if (isStepperNext) el.click(); else simulateHumanClick(el); }, 600 + Math.random() * 400);
-                nextActionTime = now + 1500;
+                setTimeout(() => {
+                    if (isStepperNext) el.click();
+                    else if (isListOption) (el.querySelector('input[type="checkbox"], input[type="radio"]') || el).click();
+                    else simulateHumanClick(el);
+                }, 250 + Math.random() * 250);
+                nextActionTime = now + 900;
                 return;
             }
         }
@@ -2017,8 +2025,8 @@
                 mediaRetries[mediaId] = att + 1;
 
                 sendStatus(`Clicking Play button (attempt ${att + 1})...`, '#f9e2af', true);
-                setTimeout(() => simulateHumanClick(pb), 800);
-                nextActionTime = now + 4000;
+                setTimeout(() => simulateHumanClick(pb), 400);
+                nextActionTime = now + 2000;
                 return;
             }
 
