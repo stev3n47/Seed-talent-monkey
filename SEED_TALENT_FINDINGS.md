@@ -286,6 +286,13 @@ Retesting v9.14 showed the video "played then randomly stopped" on each attempt 
 
 A second flashcard variant then stalled: `blocks-flashcard--column` grids render `li.flashcard` cards whose flip buttons carry **no `id`** — the v9.07 selector `[id$="-front-flip-btn"]` matched nothing, so START scrolled toward the locked Continue indefinitely. Live package inspection (course `C0319`, "Partners for Freedom") showed the distinguishing markup: unflipped cards lack `li.flashcard--flipped`, and the actionable control is `.flashcard-side--front .flashcard-side-flip__btn` (back-side buttons share the class — parent scope is required). Verified end-to-end on the live package: flipping all three fronts cleared the locked Continue. Version 9.16 adds `li.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn` — self-deduping via the `:not(.flashcard--flipped)` guard rather than element identity, since these buttons have no ids.
 
+### Rise video anti-skip + flashcard-slider stepper (v9.17)
+
+Two more findings from the C0319 package ("Last Prisoner Project", Release lesson — `cmi.location` in SNIFF identified it):
+
+1. **The video player reverts programmatic seeks and clamps playbackRate.** Live probe: `currentTime = d-5` snapped back to 0; ~70s at `playbackRate=16` advanced only ~148s (≈2×). The watchdog's re-seek loop was therefore fighting the player — the user-visible "still messing with it after advancing." The watchdog also kept running on detached elements after SPA navigation and could stack parallel instances per retry. v9.17: detects a reverted seek (`currentTime` falls >2s below target) and stops seeking permanently for that element (`noSeek`); clears on `!m.isConnected`; guards with `m.__seedWd` so the medias loop waits on a live watchdog instead of spawning retries; widened finish tolerance to `duration-1`; stall give-up at ~30s of no progress, hard cap ~6min. Videos on anti-skip players now simply play through at the clamped rate.
+2. **`block-flashcards-slider` is a sequential stepper** (`button.block-flashcards-slider__arrow--next/--prev`, `aria-disabled` at bounds, localized "Next/Previous flashcard" labels; `button.process-counter__btn` step dots with `aria-current`). Its "Next" aria-label would be claimed and deduped by forward-nav — the same dead-code trap as v9.08's carousel. v9.17 excludes `block-flashcards-slider__arrow` and `process-counter__btn` from forward-nav, adds the next-arrow and step counters to C1 as single-`click()` sequential steppers, and extends the active-skip to `aria-current="true"` (boolean form used by counter buttons).
+
 ### Known solver limitations
 
 - It currently requires the question and controls to be rendered in the DOM.

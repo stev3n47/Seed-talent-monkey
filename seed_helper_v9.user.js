@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.16
+// @version      9.17
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.16</span>
+            <span>🤖 Seed Helper v9.17</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.16').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.17').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.16',
+            helperVersion: '9.17',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1752,7 +1752,7 @@
             // Intra-block carousel steppers belong to the interactive handler (C1).
             // Forward-nav would claim them once via data-block-id navId, dedupe every
             // later click, and keep hasUnlockedFwd true so C1 never runs.
-            if (el.matches('button.carousel-controls-next, button.carousel-controls-prev, button.carousel-controls-item-btn')) return;
+            if (el.matches('button.carousel-controls-next, button.carousel-controls-prev, button.carousel-controls-item-btn, button.block-flashcards-slider__arrow, button.process-counter__btn')) return;
             const cleanT = t.replace(/[^A-Z0-9\s]/g, '').trim();
             const isTerminal = isTerminalNavLabel(cleanT);
             const isFwd = !isTerminal && (
@@ -1830,6 +1830,8 @@
                 'button.flashcard__turn, ' +
                 'button.flashcard-side-flip__btn[id$="-front-flip-btn"], ' +
                 'li.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn, ' +
+                'button.block-flashcards-slider__arrow--next, ' +
+                'button.process-counter__btn, ' +
                 'button.blocks-slide-indicator__button, ' +
                 'button.blocks-gallery-grid__image, ' +
                 'button.interactive-grid__item, ' +
@@ -1846,7 +1848,8 @@
                     el.classList.contains('is-active') ||
                     el.classList.contains('blocks-slide-indicator__button--active') ||
                     el.getAttribute('aria-selected') === 'true' ||
-                    el.getAttribute('aria-current') === 'page') continue;
+                    el.getAttribute('aria-current') === 'page' ||
+                    el.getAttribute('aria-current') === 'true') continue;
 
                 // Skip accordions that are already open
                 if (el.getAttribute('aria-expanded') === 'true') continue;
@@ -1892,7 +1895,7 @@
                 // Sequential steppers must fire exactly one click: the full synthetic
                 // sequence + native click double-fires and can skip a step's onStep,
                 // leaving the block permanently incomplete.
-                const isStepperNext = el.matches('button.carousel-controls-next, button.process-control--next, button.carousel-slider__control--next, button.block-carousel__control--next');
+                const isStepperNext = el.matches('button.carousel-controls-next, button.process-control--next, button.carousel-slider__control--next, button.block-carousel__control--next, button.block-flashcards-slider__arrow--next, button.process-counter__btn');
                 sendStatus(isFlashcardGrid ? 'Flipping required card...' : isStepperNext ? 'Advancing process step...' : 'Completing interactive block...', '#f9e2af', true);
                 setTimeout(() => { if (isStepperNext) el.click(); else simulateHumanClick(el); }, 600 + Math.random() * 400);
                 nextActionTime = now + 1500;
@@ -1914,10 +1917,18 @@
                     const block   = m.closest('[id^="block-"]') || m.closest('[class*="block-"]') || m.parentElement;
                     const docY    = window.scrollY + m.getBoundingClientRect().top;
                     const mediaId = block ? (block.id || block.className || 'media_' + i) : ('media_' + Math.round(docY / 500));
-                    if (m.currentTime > 0 && m.duration > 0 && m.currentTime >= m.duration - 0.5) {
+                    if (m.currentTime > 0 && m.duration > 0 && m.currentTime >= m.duration - 1) {
                         watchedMedia.add(mediaId);
                     }
                     if (watchedMedia.has(mediaId)) continue;
+
+                    // A live watchdog already owns this element — wait for it
+                    // instead of burning retry budget on a parallel attempt.
+                    if (m.__seedWd) {
+                        sendStatus('Video playing...', '#f9e2af', true);
+                        nextActionTime = now + 3000;
+                        return;
+                    }
 
                     const att = mediaRetries[mediaId] || 0;
                     if (att >= 3) { watchedMedia.add(mediaId); continue; }
@@ -1937,34 +1948,46 @@
                         m.playbackRate = 16;
                         m.play().catch(() => {});
 
-                        // Watchdog: keep the video moving to the end. Handles
-                        // metadata not being ready, buffer stalls at 16x, and
-                        // Video.js re-pausing — none of which a one-shot
-                        // seek+poll can recover from.
-                        let lastT = -1, stalled = 0, checks = 0;
+                        // Watchdog: keep the video moving to the end. Rise video
+                        // blocks can revert programmatic seeks and clamp
+                        // playbackRate (~2x), so this survives a long real-time
+                        // playthrough and stops fighting a seek-proof player.
+                        let lastT = -1, stalled = 0, checks = 0, seekTarget = -1, noSeek = false;
                         const watchdog = setInterval(() => {
                             checks++;
-                            if (m.ended || (m.duration > 0 && m.currentTime >= m.duration - 0.5)) {
+                            if (!m.isConnected) { clearInterval(watchdog); m.__seedWd = false; return; }
+                            const d = m.duration;
+                            if (m.ended || (d > 0 && m.currentTime >= d - 1)) {
                                 clearInterval(watchdog);
+                                m.__seedWd = false;
                                 ['timeupdate', 'ended'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
                                 watchedMedia.add(mediaId);
                                 sendStatus('Video finished.', '#a6e3a1', true);
                                 return;
                             }
-                            const d = m.duration;
-                            if (d > 10 && m.currentTime < d - 6) {
+                            // If the player undid our seek, stop seeking — it
+                            // has anti-skip protection and we must play through.
+                            if (seekTarget >= 0) {
+                                if (m.currentTime < seekTarget - 2) { noSeek = true; sendDebug('video seek reverted — playing through'); }
+                                seekTarget = -1;
+                            }
+                            if (!noSeek && d > 10 && m.currentTime < d - 6) {
                                 sendStatus('Scrubbing video...', '#a6e3a1', true);
                                 m.currentTime = d - 5;
+                                seekTarget = d - 5;
                                 ['seeking', 'seeked', 'timeupdate'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
                             }
+                            if (m.playbackRate !== 16) m.playbackRate = 16;
                             if (m.paused) { m.muted = true; m.play().catch(() => {}); }
                             else if (m.currentTime === lastT) {
                                 stalled++;
-                                if (stalled >= 3) { m.currentTime = (m.currentTime || 0) + 0.5; m.play().catch(() => {}); stalled = 0; }
+                                if (stalled % 6 === 0) m.play().catch(() => {});
+                                if (stalled >= 60) { clearInterval(watchdog); m.__seedWd = false; sendDebug('video stalled — attempt exhausted'); return; }
                             } else stalled = 0;
                             lastT = m.currentTime;
-                            if (checks > 90) clearInterval(watchdog);
+                            if (checks > 720) { clearInterval(watchdog); m.__seedWd = false; }
                         }, 500);
+                        m.__seedWd = true;
                     }, 800);
 
                     nextActionTime = now + 7000;
