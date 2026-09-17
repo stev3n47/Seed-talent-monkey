@@ -1,0 +1,662 @@
+{
+  "helperVersion": "9.09",
+  "capturedAt": "2026-09-17T17:53:02.344Z",
+  "type": "unknown-idle",
+  "engine": "Rise",
+  "frame": "https://d1b20t6ufgwz51.cloudfront.net/C1669/1753832013613/scormcontent/index.html",
+  "title": "Quiz - The Science of Exotic Part 3: The Trio of Tropicanna",
+  "detection": {
+    "kind": "",
+    "label": "",
+    "evidence": {}
+  },
+  "blockerMessages": [],
+  "controls": [
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SKIP TO LESSON",
+      "disabled": false,
+      "checked": false,
+      "cls": "visually-hidden btn-skip-to-lesson brand--ui"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "Close navigation menu",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-control__button"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "EXIT COURSE",
+      "disabled": false,
+      "checked": false,
+      "cls": "courseExit__button"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "The Science of Exotic Part 3: The Trio of Tropicanna",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar-header__title nav-sidebar-header__title--compact"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "INTRODUCTION",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Introduction",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "A Brief History of Tangie",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "If It Was Easy, Everyone Would Do It",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "THE EXPERIMENT",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Trust the Process",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "The Electric Kool-Aid Tangie Test",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Collaborative Cannabis",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "MISSING MERCAPTANS",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "The Tropical Trio",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Introducing Tropicannasulfurs",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "APPLYING UNDERSTANDINGS",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Trust Your Nose",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "D-Limonene: The Misunderstood Terpene",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Going Beyond Cannabis: Tropicannasulfers in Beer, Wine, & Nature",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "WHAT'S NEXT?",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "We’re Left With the Following Questions",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Conclusion",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "WRAPPING UP",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Epilogue",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Quiz",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--active nav-sidebar__outline-section-ite"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson 14 - Epilogue",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-nav-link__link lesson-nav-link__link--theme-default"
+    },
+    {
+      "tag": "input",
+      "type": "radio",
+      "role": "",
+      "label": "",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option__input"
+    },
+    {
+      "tag": "input",
+      "type": "radio",
+      "role": "",
+      "label": "",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option__input"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SUBMIT",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-card__button"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "NEXT",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-card__button quiz-card__button--next brand_ui visually-hidden-always"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "TAKE AGAIN",
+      "disabled": false,
+      "checked": false,
+      "cls": "restart-button button"
+    }
+  ],
+  "lockedNavigation": [
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "NEXT",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-card__button quiz-card__button--next brand_ui visually-hidden-always"
+    }
+  ],
+  "canvases": [
+    {
+      "width": 590,
+      "height": 500,
+      "label": "",
+      "cls": "odometer__canvas"
+    },
+    {
+      "width": 170,
+      "height": 170,
+      "label": "",
+      "cls": "odometer__fail"
+    },
+    {
+      "width": 170,
+      "height": 170,
+      "label": "",
+      "cls": "odometer__pass"
+    }
+  ],
+  "embeds": [],
+  "recentActions": [
+    {
+      "at": "2026-09-17T17:52:55.340Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:52:55.343Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:55.343Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:52:56.339Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:56.339Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:52:56.342Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:56.343Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:52:57.325Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:57.325Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:52:57.327Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:57.328Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:52:58.339Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:58.339Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:52:58.341Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:58.342Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:52:59.325Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:59.325Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:52:59.327Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:52:59.328Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:53:00.333Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:53:00.334Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:53:00.336Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:53:00.337Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:53:01.327Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:53:01.327Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:53:01.329Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:53:01.330Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T17:53:02.339Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    },
+    {
+      "at": "2026-09-17T17:53:02.339Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz True or False: Tropi already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T17:53:02.342Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=2"
+    }
+  ],
+  "runtimeErrors": [],
+  "recentNetwork": [
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.location",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.location",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    }
+  ]
+}

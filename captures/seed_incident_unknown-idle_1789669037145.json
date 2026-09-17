@@ -1,0 +1,625 @@
+{
+  "helperVersion": "9.10",
+  "capturedAt": "2026-09-17T18:16:20.158Z",
+  "type": "unknown-idle",
+  "engine": "Rise",
+  "frame": "https://d1b20t6ufgwz51.cloudfront.net/C1669/1753832013613/scormcontent/index.html",
+  "title": "The Science of Exotic Part 3: The Trio of Tropicanna",
+  "detection": {
+    "kind": "",
+    "label": "",
+    "evidence": {}
+  },
+  "blockerMessages": [],
+  "controls": [
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SKIP TO LESSON",
+      "disabled": false,
+      "checked": false,
+      "cls": "visually-hidden btn-skip-to-lesson brand--ui"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "Close navigation menu",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-control__button"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "EXIT COURSE",
+      "disabled": false,
+      "checked": false,
+      "cls": "courseExit__button"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "The Science of Exotic Part 3: The Trio of Tropicanna",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar-header__title nav-sidebar-header__title--compact"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "INTRODUCTION",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Introduction",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "A Brief History of Tangie",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "If It Was Easy, Everyone Would Do It",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "THE EXPERIMENT",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Trust the Process",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "The Electric Kool-Aid Tangie Test",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Collaborative Cannabis",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "MISSING MERCAPTANS",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "The Tropical Trio",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Introducing Tropicannasulfurs",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "APPLYING UNDERSTANDINGS",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Trust Your Nose",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "D-Limonene: The Misunderstood Terpene",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Going Beyond Cannabis: Tropicannasulfers in Beer, Wine, & Nature",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "WHAT'S NEXT?",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "We’re Left With the Following Questions",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Conclusion",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "WRAPPING UP",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-toggle"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Epilogue",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--theme-default"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Quiz",
+      "disabled": false,
+      "checked": false,
+      "cls": "nav-sidebar__outline-section-item__link nav-sidebar__outline-section-item__link--active nav-sidebar__outline-section-ite"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson 14 - Epilogue",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-nav-link__link lesson-nav-link__link--theme-default"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "TAKE AGAIN",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-header__start-quiz brand--color"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "TAKE AGAIN",
+      "disabled": false,
+      "checked": false,
+      "cls": "restart-button button"
+    }
+  ],
+  "lockedNavigation": [],
+  "canvases": [
+    {
+      "width": 590,
+      "height": 500,
+      "label": "",
+      "cls": "odometer__canvas"
+    },
+    {
+      "width": 170,
+      "height": 170,
+      "label": "",
+      "cls": "odometer__fail"
+    },
+    {
+      "width": 170,
+      "height": 170,
+      "label": "",
+      "cls": "odometer__pass"
+    }
+  ],
+  "embeds": [],
+  "recentActions": [
+    {
+      "at": "2026-09-17T18:16:05.159Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:06.161Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:06.162Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:07.158Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:07.159Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:08.169Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:08.170Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:09.159Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:09.160Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:10.165Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:10.168Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:11.157Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:11.159Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:12.170Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:12.174Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:13.144Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:13.145Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:14.153Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:14.155Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:15.147Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:15.149Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:16.145Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:16.148Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:17.153Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:17.155Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:18.143Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:18.145Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:19.142Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    },
+    {
+      "at": "2026-09-17T18:16:19.144Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:16:20.155Z",
+      "kind": "debug",
+      "text": "Score 80 >= 80 - ignoring Take Again button."
+    }
+  ],
+  "runtimeErrors": [],
+  "recentNetwork": [
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.4.description",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.4.weighting",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.4.latency",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.4.objectives.0.id",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.4.timestamp",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://GetValue/cmi.interactions._count",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.id",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.type",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.learner_response",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.result",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.correct_responses.0.pattern",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.description",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.weighting",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.latency",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.objectives.0.id",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.5.timestamp",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2806304/update",
+      "frame": "https://app.seedtalent.com/course/6c0ec2c3-52aa-41a3-8f03-4da3b6860f45"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    }
+  ]
+}

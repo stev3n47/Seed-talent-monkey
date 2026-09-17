@@ -1,0 +1,146 @@
+[
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/kpi",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "[{\"kpi\":\"ticket_size\",\"name\":\"Ticket Size\",\"type\":\"ddl\",\"active\":true,\"unit\":\"$\",\"id\":\"8950fb7e-efe5-4c50-9f98-5de85a392fba\",\"reportId\":1},{\"kpi\":\"units_per_transaction\",\"name\":\"Units Per Transaction\",\"type\":\"ddl\",\"active\":true,\"unit\":\"units\",\"id\":\"c070daee-5faf-40ce-aa49-c17fa31c9b80\",\"reportId\":6},{\"kpi\":\"pct_discount\",\"name\":\"Percent Discount\",\"type\":\"ddl\",\"active\":true,\"unit\":\"%\",\"id\":\"3286bdbb-b9b3-4a05-8ed4-89ae7de16ccb\",\"reportId\":4},{\"kpi\":\"avg_unit_price\",\"name\":\"Average Unit Price\",\"type\":\"ddl\",\"active\":true,\"unit\":\"$\",\"id\":\"f2f49ea2-cbe9-42b5-95ca-9e0000fdd113\",\"reportId\":7},{\"kpi\":\"transactions_per_hour\",\"name\":\"Transactions Per Hour\",\"type\":\"ddl\",\"active\":true,\"unit\":\"transactions\",\"id\":\"f6e5fc7f-914c-4b5f-899c-1982219ae46d\",\"reportId\":5},{\"kpi\":\"percentage_completed\",\"name\":\"Percent Completed\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"3266512d-8d69-4fb4-95c9-e09a689aa951\",\"reportId\":13},{\"kpi\":\"threshold_met\",\"name\":\"Threshold Met\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"fe32913e-29a9-450a-93ba-b335cdc98362\",\"reportId\":14},{\"kpi\":\"new_started\",\"name\":\"New Started\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"28aca734-69dd-4aec-87d3-f614d4ee12b7\",\"reportId\":8},{\"kpi\":\"total_started\",\"name\":\"Total Started\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"54bd1ad3-0410-47e7-bf8b-d81cbe89c266\",\"reportId\":9},{\"kpi\":\"new_completed\",\"name\":\"New Completed\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"e615c403-6bef-4121-bec5-4edd8f10e34d\",\"reportId\":10},{\"kpi\":\"total_completed\",\"name\":\"Total Completed\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"748f7cf1-8d9d-46ec-af9b-b11a77128147\",\"reportId\":11},{\"kpi\":\"average_score\",\"name\":\"Average Score\",\"type\":\"engagement_report\",\"active\":true,\"unit\":null,\"id\":\"f205c8c7-e2d2-4114-9311-ee09adf85d2d\",\"reportId\":12}]"
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/kpi/ddl",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "[{\"kpi\":\"ticket_size\",\"name\":\"Ticket Size\",\"type\":\"ddl\",\"active\":true,\"unit\":\"$\",\"id\":\"8950fb7e-efe5-4c50-9f98-5de85a392fba\",\"reportId\":1},{\"kpi\":\"units_per_transaction\",\"name\":\"Units Per Transaction\",\"type\":\"ddl\",\"active\":true,\"unit\":\"units\",\"id\":\"c070daee-5faf-40ce-aa49-c17fa31c9b80\",\"reportId\":6},{\"kpi\":\"pct_discount\",\"name\":\"Percent Discount\",\"type\":\"ddl\",\"active\":true,\"unit\":\"%\",\"id\":\"3286bdbb-b9b3-4a05-8ed4-89ae7de16ccb\",\"reportId\":4},{\"kpi\":\"avg_unit_price\",\"name\":\"Average Unit Price\",\"type\":\"ddl\",\"active\":true,\"unit\":\"$\",\"id\":\"f2f49ea2-cbe9-42b5-95ca-9e0000fdd113\",\"reportId\":7},{\"kpi\":\"transactions_per_hour\",\"name\":\"Transactions Per Hour\",\"type\":\"ddl\",\"active\":true,\"unit\":\"transactions\",\"id\":\"f6e5fc7f-914c-4b5f-899c-1982219ae46d\",\"reportId\":5}]"
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/white-labeling/domain/metadata",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"ui\":{\"green\":\"#56C596\",\"navbar_gradient\":{\"primary_color\":\"#054662\",\"secondary_color\":\"#67B398\"},\"primary_gradient\":{\"primary_color\":\"#56C596\",\"secondary_color\":\"#16915D\"},\"datagrid_gradient\":{\"primary_color\":\"#4b8994\",\"secondary_color\":\"#2e5170\"},\"secondary_gradient\":{\"primary_color\":\"#AB58BB\",\"secondary_color\":\"#651E7C\"},\"completion_gradient\":{\"primary_color\":\"#113145\",\"secondary_color\":\"#113145\"}},\"branding\":{\"logo_url\":\"template-logos/seedtalent_template/seedtalent_template_logo_1759513940217.png\",\"favicon_url\":\"favicon-st.ico\",\"qr_code_url\":\"template-logos/seedtalent_template/seedtalent_template_qr_code_1759509485973.png\",\"company_name\":\"Seed Talent\",\"header_image_url\":\"template-logos/seedtalent_template/seedtalent_template_header_image_1759509749640.png\"},\"login_texts\":{\"sub_heading\":\"Seed Talent centralizes your professional development for all compliance, company info, industry foundations, and product training directly from the top brands you sell today!\",\"main_heading\":\"Join tens of thousands of industry professionals advancing their knowledge and skill sets through Seed Talent!\"},\"compliance_required\":true,\"industry_specific_id\":1}"
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/users/profile",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"email\":\"stevenr2214@gmail.com\",\"id\":\"911de134-25c8-4965-a92e-c801512caa2b\",\"lastName\":\"Rivadeneira\",\"firstName\":\"Steven\",\"phone\":null,\"extended\":null,\"optIn\":0,\"emailSecondary\":null,\"status\":\"Active\",\"created\":\"2026-08-10T18:58:24.971Z\",\"updated\":\"2026-08-10T18:58:24.971Z\",\"archived\":0,\"private\":0,\"resume\":null,\"acceptPolicy\":0,\"image\":null,\"picture\":null,\"jobTitle\":null,\"fbId\":null,\"pos\":null,\"posId\":null,\"birthDate\":null,\"notes\":null,\"deletedOn\":null,\"deletedBy\":null,\"updatedOn\":null,\"updatedBy\":null,\"emailValidated\":1,\"emailValidatedOn\":\"2026-08-11T16:14:58.974Z\",\"managerOrganizationId\":null,\"createdBy\":\"bd0d93bb-bf79-4646-93b4-dac7e69515e3\",\"userGroups\":[{\"groupId\":4063,\"userId\":\"911de134-25c8-4965-a92e-c801512caa2b\",\"facilitator\":0,\"ddl\":0,\"isPrimary\":1,\"manager\":0,\"id\":327472,\"created\":\"2026-08-10T18:58:24.993Z\",\"createdBy\":\"bd0d93bb-bf79-4646-93b4-dac7e69515e3\",\"updated\":\"2026-08-10T18:58:24.993Z\",\"updatedBy\":null,\"pending\":0,\"hideGroupRequest\":0,\"pinned\":0,\"notify\":0,\"group\":{\"name\":\"Casa Verde Dover- NJ\",\"private\":0,\"code\":\"G5244\",\"status\":\"Active\",\"id\":\"c57fff59-f3e9-4efa-8156-33a05fc067cb\",\"reportId\":4063,\"parentId\":null,\"address\":\"315 US-46\",\"city\":\"Dover\",\"postal\":\"07801\",\"phone\":\"\",\"created\":\"2024-09-26T18:31:19.906Z\",\"updated\":\"2024-09-26T18:31:43.458Z\",\"discoverable\":1,\"imageUrl\":null,\"homepage\":null,\"foundedYear\":null,\"description\":null,\"rssFeed\":null,\"rssSize\":0,\"billable\":0,\"headerImage\":null,\"organizationId\":\"b012eb61-d713-410b-ad1f-ab9d03f4232d\",\"viewable\":0,\"isDefault\":0,\"groupTypeId\":1,\"ddlOnboardingStatus\":null,\"ddlActivated\":0,\"ddlActivatedOn\":null,\"ddlDeactivatedOn\":null,\"ddlActivatedBy\":null,\"ddlDeactivatedBy\":null,\"stateId\":31,\"countryId\":1,\"createdBy\":null,\"updatedBy\":null,\"myScorecardAccess\":0,\"organization\":{\"name\":\"Casa Verde\",\"id\":\"b012eb61-d713-410b-ad1f-ab9d03f4232d\",\"tag\":\"enterprise\",\"reportId\":1071,\"createdOn\":\"2024-09-26T18:30:25.172Z\",\"updatedOn\":null,\"createdBy\":\"63c2c75e-5caa-4150-b68f-43eb28aa503d\",\"updatedBy\":null,\"isGraveyard\":false,\"organizationIndustries\":[{\"organizationId\":\"b012eb61-d713-410b-ad1f-ab9d03f4232d\",\"industryId\":1,\"createdAt\":\"2025-10-08T06:21:45.459Z\",\"createdBy\":null,\"deletedBy\":null,\"deletedAt\":null,\"id\":874,\"industry\":{\"name\":\"cannabis\",\"description\":\"Cannabis industry\",\"isActive\":true,\"createdAt\":\"2025-10-08T06:21:45.459Z\",\"updatedAt\":\"2025-10-08T06:21:45.459Z\",\"createdBy\":null,\"updatedBy\":null,\"id\":1}}]}}}],\"userRoles\":[{\"userId\":\"911de134-25c8-4965-a92e-c801512caa2b\",\"roleId\":\"61faee52-9459-4fc7-8cad-10eb8318f4fa\",\"createdBy\":null,\"updatedBy\":null,\"id\":175456,\"created\":\"2026-08-10T18:58:24.986Z\",\"updated\":null,\"role\":{\"name\":\"Learner\",\"home\":\"/courses\",\"id\":\"61faee52-9459-4fc7-8cad-10eb8318f4fa\",\"precedence\":4,\"isDefault\":1,\"created\":\"2021-05-18T17:29:25.000Z\",\"updated\":\"2021-05-18T17:29:38.000Z\",\"emailTemplate\":null,\"rolePermissions\":[{\"roleId\":\"61faee52-9459-4fc7-8cad-10eb8318f4fa\",\"permissionId\":\"d627acc8-f72e-11ec-92b0-e953e581d7b0\",\"id\":\"02caca60-7530-11ed-a834-4556dc4ff4da\",\"permission\":{\"name\":\"courses:read\",\"id\":\"d627acc8-f72e-11ec-92b0-e953e581d7b0\"}},{\"roleId\":\"61faee52-9459-4fc7-8cad-10eb8318f4fa\",\"permissionId\":\"d627acc8-f72e-11ec-92b0-e953e581d7b0\",\"id\":\"65e1419e-752e-11ed-a834-4556dc4ff4da\",\"permission\":{\"name\":\"courses:read\",\"id\":\"d627acc8-f72e-11ec-92b0-e953e581d7b0\"}},{\"roleId\":\"61faee52-9459-4fc7-8cad-10eb8318f4fa\",\"permissionId\":\"d627acc8-f72e-11ec-92b0-e953e581d7b0\",\"id\":\"85abe4fa-7530-11ed-a834-4556dc4ff4da\",\"permission\":{\"name\":\"courses:read\",\"id\":\"d627acc8-f72e-11ec-92b0-e953e581d7b0\"}}]}}],\"sso\":null,\"primaryGroupId\":\"c57fff59-f3e9-4efa-8156-33a05fc067cb\",\"myScorecardAccess\":false,\"enrolledInDdl\":false,\"ddl\":{\"kpis\":[],\"hasDdlIntegration\":true,\"isPrimaryDdlGroup\":false,\"isUserEnrolledInDdl\":false,\"ddlGroupIds\":[]},\"facilitatorGroupsIds\":[],\"managerGroupIds\":[],\"organization\":{\"id\":\"b012eb61-d713-410b-ad1f-ab9d03f4232d\",\"name\":\"Casa Verde\"},\"permissions\":[\"courses:read\"],\"hasNotificationsAccess\":false,\"enableMagicLinks\":false}"
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/white-labeling/organization/b012eb61-d713-410b-ad1f-ab9d03f4232d/metadata/active",
+    "status": 200,
+    "reqBody": null,
+    "respBody": ""
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/white-labeling/domain/metadata",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"ui\":{\"green\":\"#56C596\",\"navbar_gradient\":{\"primary_color\":\"#054662\",\"secondary_color\":\"#67B398\"},\"primary_gradient\":{\"primary_color\":\"#56C596\",\"secondary_color\":\"#16915D\"},\"datagrid_gradient\":{\"primary_color\":\"#4b8994\",\"secondary_color\":\"#2e5170\"},\"secondary_gradient\":{\"primary_color\":\"#AB58BB\",\"secondary_color\":\"#651E7C\"},\"completion_gradient\":{\"primary_color\":\"#113145\",\"secondary_color\":\"#113145\"}},\"branding\":{\"logo_url\":\"template-logos/seedtalent_template/seedtalent_template_logo_1759513940217.png\",\"favicon_url\":\"favicon-st.ico\",\"qr_code_url\":\"template-logos/seedtalent_template/seedtalent_template_qr_code_1759509485973.png\",\"company_name\":\"Seed Talent\",\"header_image_url\":\"template-logos/seedtalent_template/seedtalent_template_header_image_1759509749640.png\"},\"login_texts\":{\"sub_heading\":\"Seed Talent centralizes your professional development for all compliance, company info, industry foundations, and product training directly from the top brands you sell today!\",\"main_heading\":\"Join tens of thousands of industry professionals advancing their knowledge and skill sets through Seed Talent!\"},\"compliance_required\":true,\"industry_specific_id\":1}"
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/announcements/active/latest",
+    "status": 200,
+    "reqBody": null,
+    "respBody": ""
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/courses/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed/start",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"utr\":{\"start\":\"2026-09-17T19:06:02.823Z\",\"end\":\"2026-09-17T19:06:15.058Z\",\"courseId\":107,\"userId\":\"911de134-25c8-4965-a92e-c801512caa2b\",\"status\":\"Completed\",\"id\":2810901,\"externalId\":\"5cc6cec9-1a46-409a-b6a9-c3b2f98c12e4\",\"created\":\"2026-09-17T19:06:02.823Z\",\"updated\":\"2026-09-17T19:06:15.059Z\",\"progress\":100,\"duration\":11853,\"score\":100,\"passed\":true,\"assessmentId\":null,\"failCount\":0,\"locked\":false,\"lockedTime\":null,\"lockCount\":0,\"groupId\":4063,\"courseRoundId\":null,\"course\":{\"name\":\"Last Prisoner Project\",\"archived\":false,\"description\":\"The Last Prisoner Project was founded in 2019 out of the belief that no one should remain incarcerated for cannabis offenses.\\r\\n\\r\\n\\r\\n\\r\\nWe brought together a group of justice-impacted individuals, policy and education experts, and leaders in the worlds of criminal justice and drug policy reform to work to end the fundamental injustice that is America's policy of cannabis prohibition.\",\"courseTypeId\":1,\"id\":\"ddfd6cf4-0083-4523-b8b1-8faa18fb96ed\",\"reportId\":107,\"reference\":\"C0319\",\"updated\":\"2024-09-17T14:28:58.756Z\",\"created\":\"2022-11-30T20:03:40.000Z\",\"imageUrl\":\"course-images/C0319/32250a56-f0d6-4edc-bff8-dfa6c4af6d35.jpg\",\"url\":\"C0319/1726589699952/scormdriver/indexAPI.html\",\"prerequisiteId\":null,\"rewardId\":null,\"certificateId\":null,\"searchType\":\"Brand\",\"templateId\":null,\"estimatedHours\":0.75,\"customerId\":\"\",\"externalCourseId\":\"\",\"timeLimit\":0,\"createdBy\":null,\"updatedBy\":\"3813eb60-c0bd-4a64-9022-2c6ab9ba7988\",\"contentCreatorId\":null,\"courseCategoryId\":1,\"courseSourceId\":1,\"organizationId\":\"6d976752-cc74-49a5-a9bf-a8be753ee345\",\"free\":false,\"dateFirstPublished\":null,\"revisionDate\":\"2024-09-17T05:00:00.000Z\",\"isRevision\":true},\"data\":\"{\\\"id\\\":2810901,\\\"cmi.exit\\\":\\\"normal\\\",\\\"cmi.location\\\":\\\"index.html#/lessons/dEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h\\\",\\\"cmi.completion_status\\\":\\\"completed\\\",\\\"cmi.success_status\\\":\\\"passed\\\",\\\"progress\\\":1,\\\"cmi.progress_measure\\\":\\\"1\\\",\\\"cmi.score.scaled\\\":\\\"1\\\",\\\"cmi.score.raw\\\":\\\"100\\\",\\\"cmi.score.min\\\":\\\"0\\\",\\\"cmi.score.max\\\":\\\"100\\\"}\"},\"course\":{\"name\":\"Last Prisoner Project\",\"archived\":false,\"description\":\"The Last Prisoner Project was founded in 2019 out of the belief that no one should remain incarcerated for cannabis offenses.\\r\\n\\r\\n\\r\\n\\r\\nWe brought together a group of justice-impacted individuals, policy and education experts, and leaders in the worlds of criminal justice and drug policy reform to work to end the fundamental injustice that is America's policy of cannabis prohibition.\",\"courseTypeId\":1,\"id\":\"ddfd6cf4-0083-4523-b8b1-8faa18fb96ed\",\"reportId\":107,\"reference\":\"C0319\",\"updated\":\"2024-09-17T14:28:58.756Z\",\"created\":\"2022-11-30T20:03:40.000Z\",\"imageUrl\":\"course-images/C0319/32250a56-f0d6-4edc-bff8-dfa6c4af6d35.jpg\",\"url\":\"C0319/1726589699952/scormdriver/indexAPI.html\",\"prerequisiteId\":null,\"rewardId\":null,\"certificateId\":null,\"searchType\":\"Brand\",\"templateId\":null,\"estimatedHours\":0.75,\"customerId\":\"\",\"externalCourseId\":\"\",\"timeLimit\":0,\"createdBy\":null,\"updatedBy\":\"3813eb60-c0bd-4a64-9022-2c6ab9ba7988\",\"contentCreatorId\":null,\"courseCategoryId\":1,\"courseSourceId\":1,\"organizationId\":\"6d976752-cc74-49a5-a9bf-a8be753ee345\",\"free\":false,\"dateFirstPublished\":null,\"revisionDate\":\"2024-09-17T05:00:00.000Z\",\"isRevision\":true,\"courseType\":{\"name\":\"Course\",\"id\":1,\"externalId\":\"4716b762-752e-11ed-a834-4556dc4ff4da\"},\"courseCategory\":{\"name\":\"Brand Training\",\"id\":1,\"externalId\":\"9a59afec-1fe8-11ed-94bd-0c5eb15fc9d1\"},\"courseIncentive\":null,\"courseCommunication\":null,\"courseOutreach\":null,\"organization\":{\"name\":\"Last Prisoner Project lPublic\",\"id\":\"6d976752-cc74-49a5-a9bf-a8be753ee345\",\"tag\":\"partner\",\"reportId\":633,\"createdOn\":\"2022-12-06T00:26:40.000Z\",\"updatedOn\":\"2022-12-06T00:26:40.000Z\",\"createdBy\":null,\"updatedBy\":null,\"isGraveyard\":false}},\"completed\":{\"start\":\"2026-09-17T19:06:02.823Z\",\"end\":\"2026-09-17T19:06:15.058Z\",\"courseId\":107,\"userId\":\"911de134-25c8-4965-a92e-c801512caa2b\",\"status\":\"Completed\",\"id\":2810901,\"externalId\":\"5cc6cec9-1a46-409a-b6a9-c3b2f98c12e4\",\"created\":\"2026-09-17T19:06:02.823Z\",\"updated\":\"2026-09-17T19:06:15.059Z\",\"progress\":100,\"duration\":11853,\"score\":100,\"passed\":true,\"assessmentId\":null,\"failCount\":0,\"locked\":false,\"lockedTime\":null,\"lockCount\":0,\"groupId\":4063,\"courseRoundId\":null},\"isAssessment\":false}"
+  },
+  {
+    "frame": "https://app.seedtalent.com/course/ddfd6cf4-0083-4523-b8b1-8faa18fb96ed",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/notifications/user/unread-count",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"count\":0}"
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/courses/data?utrId=2810901&userId=911de134-25c8-4965-a92e-c801512caa2b",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"start\":\"2026-09-17T19:06:02.823Z\",\"end\":\"2026-09-17T19:06:15.058Z\",\"courseId\":107,\"userId\":\"911de134-25c8-4965-a92e-c801512caa2b\",\"status\":\"Completed\",\"id\":2810901,\"externalId\":\"5cc6cec9-1a46-409a-b6a9-c3b2f98c12e4\",\"created\":\"2026-09-17T19:06:02.823Z\",\"updated\":\"2026-09-17T19:06:15.059Z\",\"progress\":100,\"duration\":11853,\"score\":100,\"passed\":true,\"assessmentId\":null,\"failCount\":0,\"locked\":false,\"lockedTime\":null,\"lockCount\":0,\"groupId\":4063,\"courseRoundId\":null,\"data\":\"{\\\"id\\\":2810901,\\\"cmi.exit\\\":\\\"normal\\\",\\\"cmi.location\\\":\\\"index.html#/lessons/dEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h\\\",\\\"cmi.completion_status\\\":\\\"completed\\\",\\\"cmi.success_status\\\":\\\"passed\\\",\\\"progress\\\":1,\\\"cmi.progress_measure\\\":\\\"1\\\",\\\"cmi.score.scaled\\\":\\\"1\\\",\\\"cmi.score.raw\\\":\\\"100\\\",\\\"cmi.score.min\\\":\\\"0\\\",\\\"cmi.score.max\\\":\\\"100\\\"}\"}"
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "GET",
+    "url": "https://api.seedtalent.com/api/v1/course-story/story-map?utrId=2810901",
+    "status": 200,
+    "reqBody": null,
+    "respBody": "{\"nodes\":[],\"finalLeaf\":null,\"visitedContent\":[]}"
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://API_FOUND/SCORM_2004",
+    "status": 0,
+    "reqBody": null,
+    "respBody": null
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://SetValue/cmi.suspend_data",
+    "status": 0,
+    "reqBody": "{\"v\":2,\"d\":[123,34,112,114,111,103,114,101,115,115,34,58,256,108,263,115,111,110,265,267,34,48,266,256,105,278,276,281,280,275,277,275,118,112,266,50,49,125,293,44,34,49,283,278,294,34,50,298,267,300,51,303,123,300,52,307,300,53,311,125,295,54,314,295,55,318,34,56,321,57,321,49,286,279,299,315,296,297,275,284,308,331,49,306,334,330,295,49,310,340,304,293,347,125],\"cpv\":\"sz7DCjEw\"}",
+    "respBody": null
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://SetValue/cmi.suspend_data",
+    "status": 0,
+    "reqBody": "{\"v\":2,\"d\":[123,34,112,114,111,103,114,101,115,115,34,58,256,108,263,115,111,110,265,267,34,48,266,256,105,278,276,281,280,275,277,275,118,112,266,51,53,125,293,44,34,49,283,278,294,34,50,298,267,300,51,303,123,300,52,307,300,53,311,125,295,54,314,295,55,318,34,56,321,57,321,49,286,279,299,315,296,297,275,284,308,331,49,306,334,330,295,49,310,340,304,293,347,125],\"cpv\":\"sz7DCjEw\"}",
+    "respBody": null
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://SetValue/cmi.suspend_data",
+    "status": 0,
+    "reqBody": "{\"v\":2,\"d\":[123,34,112,114,111,103,114,101,115,115,34,58,256,108,263,115,111,110,265,267,34,48,266,256,105,278,276,281,280,275,277,275,118,112,266,52,50,125,293,44,34,49,283,278,294,34,50,298,267,300,51,303,123,300,52,307,300,53,311,125,295,54,314,295,55,318,34,56,321,57,321,49,286,279,299,315,296,297,275,284,308,331,49,306,334,330,295,49,310,340,304,293,347,125],\"cpv\":\"sz7DCjEw\"}",
+    "respBody": null
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://SetValue/cmi.suspend_data",
+    "status": 0,
+    "reqBody": "{\"v\":2,\"d\":[123,34,112,114,111,103,114,101,115,115,34,58,256,108,263,115,111,110,265,267,34,48,266,256,105,278,276,281,280,275,277,275,118,112,266,55,52,125,293,44,34,49,283,278,294,34,50,298,267,300,51,303,123,300,52,307,300,53,311,125,295,54,314,295,55,318,34,56,321,57,321,49,286,279,299,315,296,297,275,284,308,331,49,306,334,330,295,49,310,340,304,293,347,125],\"cpv\":\"sz7DCjEw\"}",
+    "respBody": null
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://SetValue/cmi.session_time",
+    "status": 0,
+    "reqBody": "PT20S",
+    "respBody": null
+  },
+  {
+    "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html?courseUrl=C0319%2F1726589699952%2Fscormdriver%2FindexAPI.html&apiUrl=https%3A%2F%2Fapi.seedtalent.com&userId=911de134-25c8-4965-a92e-c801512caa2b&courseId=ddfd6cf4-0083-4523-b8b1-8faa18fb96ed&utrId=2810901&timeLimit=0&isAssessment=false&utrData=%7B%22id%22%3A2810901%2C%22cmi.exit%22%3A%22normal%22%2C%22cmi.location%22%3A%22index.html%23%2Flessons%2FdEn6xdJ2QTiJ8pZbYZGQrYP991muTy0h%22%2C%22progress%22%3A1%2C%22cmi.session_time%22%3A%22%22%7D",
+    "method": "SCORM",
+    "url": "scorm://Commit/Commit",
+    "status": 0,
+    "reqBody": null,
+    "respBody": null
+  }
+]

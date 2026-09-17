@@ -1,0 +1,671 @@
+{
+  "helperVersion": "9.11",
+  "capturedAt": "2026-09-17T18:44:11.766Z",
+  "type": "unknown-idle",
+  "engine": "Rise",
+  "frame": "https://d1b20t6ufgwz51.cloudfront.net/C0102/scormcontent/index.html",
+  "title": "Sensitization Protocol - The Science of Tolerance Breaks - Quiz",
+  "detection": {
+    "kind": "",
+    "label": "",
+    "evidence": {}
+  },
+  "blockerMessages": [],
+  "controls": [
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "Show Search Bar",
+      "disabled": false,
+      "checked": false,
+      "cls": "overview-sidebar__search-icon overview-sidebar__search-icon-appear-done overview-sidebar__search-icon-enter-done"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Sensitization Protocol - The Science of Tolerance Breaks",
+      "disabled": false,
+      "checked": false,
+      "cls": "overview-sidebar__title"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SKIP TO LESSON",
+      "disabled": false,
+      "checked": false,
+      "cls": "overview-sidebar__skip-button overview-sidebar__skip-button--offscreen"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Sensitization Protocol - The Science of Tolerance Breaks",
+      "disabled": false,
+      "checked": false,
+      "cls": "overview-sidebar__title"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SKIP TO LESSON",
+      "disabled": false,
+      "checked": false,
+      "cls": "overview-sidebar__skip-button overview-sidebar__skip-button--offscreen"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Overview Overview 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link lesson-link--visited"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson One Lesson One 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Two Lesson Two 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Three Lesson Three 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Four Lesson Four 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Five Lesson Five 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Six Lesson Six 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Seven Lesson Seven 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson Eight Lesson Eight 100 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Quiz Quiz 17 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link lesson-link--active brand--beforeBackground"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Congratulations! Congratulations! 0 Percent Complete",
+      "disabled": false,
+      "checked": false,
+      "cls": "lesson-link"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "EXIT COURSE",
+      "disabled": false,
+      "checked": false,
+      "cls": "courseExit courseExit--standard"
+    },
+    {
+      "tag": "a",
+      "type": "",
+      "role": "",
+      "label": "Lesson 9 - Lesson Eight",
+      "disabled": false,
+      "checked": false,
+      "cls": "previous-lesson__link"
+    },
+    {
+      "tag": "button",
+      "type": "",
+      "role": "",
+      "label": "Toggle Course Overview",
+      "disabled": false,
+      "checked": false,
+      "cls": "button button--default button--menu"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option quiz-multiple-choice-option--complete quiz-multiple-choice-option--incorrect"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option quiz-multiple-choice-option--complete quiz-multiple-choice-option--incorrect"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option quiz-multiple-choice-option--complete quiz-multiple-choice-option--incorrect"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option quiz-multiple-choice-option--complete quiz-multiple-choice-option--selected quiz-multiple-ch"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SUBMIT",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-card__button quiz-card__button--disabled"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "NEXT",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-card__button brand--background brand--ui"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option"
+    },
+    {
+      "tag": "div",
+      "type": "",
+      "role": "radio",
+      "label": "",
+      "disabled": false,
+      "checked": false,
+      "cls": "quiz-multiple-choice-option"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SUBMIT",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-card__button quiz-card__button--disabled"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "TAKE AGAIN",
+      "disabled": false,
+      "checked": false,
+      "cls": "restart-button button brand--hoverColor"
+    }
+  ],
+  "lockedNavigation": [
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SUBMIT",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-card__button quiz-card__button--disabled"
+    },
+    {
+      "tag": "button",
+      "type": "button",
+      "role": "",
+      "label": "SUBMIT",
+      "disabled": true,
+      "checked": false,
+      "cls": "quiz-card__button quiz-card__button--disabled"
+    }
+  ],
+  "canvases": [
+    {
+      "width": 590,
+      "height": 500,
+      "label": "",
+      "cls": "odometer__canvas"
+    },
+    {
+      "width": 170,
+      "height": 170,
+      "label": "",
+      "cls": "odometer__fail"
+    },
+    {
+      "width": 170,
+      "height": 170,
+      "label": "",
+      "cls": "odometer__pass"
+    }
+  ],
+  "embeds": [],
+  "recentActions": [
+    {
+      "at": "2026-09-17T18:43:51.762Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=4"
+    },
+    {
+      "at": "2026-09-17T18:43:51.763Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button but quiz The Sensitization Pr already attempted. Skipping..."
+    },
+    {
+      "at": "2026-09-17T18:43:51.763Z",
+      "kind": "debug",
+      "text": "detectActiveQuiz: Found submit button. Container=DIV. MCQ Options=4"
+    },
+    {
+      "at": "2026-09-17T18:43:51.764Z",
+      "kind": "status",
+      "text": "Reading question..."
+    },
+    {
+      "at": "2026-09-17T18:43:52.759Z",
+      "kind": "debug",
+      "text": "Delay 3s"
+    },
+    {
+      "at": "2026-09-17T18:43:53.756Z",
+      "kind": "debug",
+      "text": "Delay 2s"
+    },
+    {
+      "at": "2026-09-17T18:43:54.149Z",
+      "kind": "debug",
+      "text": "No past failures found for Q: The Inner Inventory"
+    },
+    {
+      "at": "2026-09-17T18:43:54.149Z",
+      "kind": "status",
+      "text": "Solving multi-select (4 opts)..."
+    },
+    {
+      "at": "2026-09-17T18:43:54.150Z",
+      "kind": "status",
+      "text": "Asking AI..."
+    },
+    {
+      "at": "2026-09-17T18:43:54.531Z",
+      "kind": "debug",
+      "text": "AI error: upstream error from nvidia: service temporarily overloaded"
+    },
+    {
+      "at": "2026-09-17T18:43:54.752Z",
+      "kind": "debug",
+      "text": "Waiting for AI..."
+    },
+    {
+      "at": "2026-09-17T18:43:55.761Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:43:56.758Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:43:57.534Z",
+      "kind": "status",
+      "text": "Retrying AI (1/3)..."
+    },
+    {
+      "at": "2026-09-17T18:43:57.753Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:43:57.806Z",
+      "kind": "debug",
+      "text": "AI error: upstream error from nvidia: service temporarily overloaded"
+    },
+    {
+      "at": "2026-09-17T18:43:58.754Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:43:59.766Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:00.752Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:01.753Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:02.752Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:03.765Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:03.808Z",
+      "kind": "status",
+      "text": "Retrying AI (2/3)..."
+    },
+    {
+      "at": "2026-09-17T18:44:04.764Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:05.764Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:06.751Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:07.751Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:08.765Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:09.752Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    },
+    {
+      "at": "2026-09-17T18:44:10.758Z",
+      "kind": "status",
+      "text": "Idle - nothing actionable found on this page."
+    }
+  ],
+  "runtimeErrors": [],
+  "recentNetwork": [
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2810768/update",
+      "frame": "https://app.seedtalent.com/course/87319350-f194-47ff-8988-22b458313ef5"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://GetValue/cmi.interactions._count",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.id",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.type",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.learner_response",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.result",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.correct_responses.0.pattern",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.description",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.weighting",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.latency",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.objectives.0.id",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.interactions.0.timestamp",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2810768/update",
+      "frame": "https://app.seedtalent.com/course/87319350-f194-47ff-8988-22b458313ef5"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2810768/update",
+      "frame": "https://app.seedtalent.com/course/87319350-f194-47ff-8988-22b458313ef5"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.suspend_data",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "PUT",
+      "status": 200,
+      "url": "https://api.seedtalent.com/api/v1/courses/2810768/update",
+      "frame": "https://app.seedtalent.com/course/87319350-f194-47ff-8988-22b458313ef5"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://SetValue/cmi.session_time",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    },
+    {
+      "method": "SCORM",
+      "status": 0,
+      "url": "scorm://Commit/Commit",
+      "frame": "https://d1b20t6ufgwz51.cloudfront.net/scorm-launcher.html"
+    }
+  ]
+}
