@@ -293,6 +293,18 @@ Two more findings from the C0319 package ("Last Prisoner Project", Release lesso
 1. **The video player reverts programmatic seeks and clamps playbackRate.** Live probe: `currentTime = d-5` snapped back to 0; ~70s at `playbackRate=16` advanced only ~148s (≈2×). The watchdog's re-seek loop was therefore fighting the player — the user-visible "still messing with it after advancing." The watchdog also kept running on detached elements after SPA navigation and could stack parallel instances per retry. v9.17: detects a reverted seek (`currentTime` falls >2s below target) and stops seeking permanently for that element (`noSeek`); clears on `!m.isConnected`; guards with `m.__seedWd` so the medias loop waits on a live watchdog instead of spawning retries; widened finish tolerance to `duration-1`; stall give-up at ~30s of no progress, hard cap ~6min. Videos on anti-skip players now simply play through at the clamped rate.
 2. **`block-flashcards-slider` is a sequential stepper** (`button.block-flashcards-slider__arrow--next/--prev`, `aria-disabled` at bounds, localized "Next/Previous flashcard" labels; `button.process-counter__btn` step dots with `aria-current`). Its "Next" aria-label would be claimed and deduped by forward-nav — the same dead-code trap as v9.08's carousel. v9.17 excludes `block-flashcards-slider__arrow` and `process-counter__btn` from forward-nav, adds the next-arrow and step counters to C1 as single-`click()` sequential steppers, and extends the active-skip to `aria-current="true"` (boolean form used by counter buttons).
 
+### Forward-nav dedupe dead-lock (v9.18)
+
+The v9.17 stall on the Release lesson generalized the v9.08 bug class: `hasUnlockedFwd` was set `true` for **any** enabled forward candidate *before* the `clickedNavs` dedupe check, and `clickedNavs` deduped permanently. So a control claimed by forward-nav — clicked once but never navigated (React `onClick` not reached, SPA re-render swapping the node, or a stepper arrow mis-claimed via `[aria-label*="Next" i]`) — held `hasUnlockedFwd` open forever: "Forward path open — waiting for transition..." → C1 never runs, the stall detector never fires, and **no incident can ever be generated**. The user sees enabled controls while the runner is silently dead.
+
+Three gaps closed in v9.18:
+
+1. **Time-windowed dedupe.** `clickedNavs` stays a Set for the quiz-feedback path; a new `fwdClickLog` Map records `{n, at}` per `navId`. A click in flight gets an 8s transition grace; after that the same control is re-clicked (self-heals clicks that never landed and mis-claimed steppers — worst case ~8s/step).
+2. **Retry ceiling releases the flag.** After 4 clicks on the same `navId` without a transition, the element is skipped *before* `hasUnlockedFwd` is set — C1, interactives, scrolling and eventually the incident detector regain control instead of waiting forever.
+3. **Exclusion gap closed.** `process-control--next`, `carousel-slider__control--next` and `block-carousel__control--next` were C1-owned steppers that forward-nav could still claim (they were never in the exclusion list); all three added.
+
+Note: `navId` for elements without `data-block-id` embeds `docY`, so scroll drift still regenerates ids — the retry cap primarily bounds block-id'd claims, which is where the observed dead-locks occurred. Also documented: SNIFF's `suspend_data` writes during the stall confirmed course-side progress recording was healthy; the dead-lock was purely DOM-side.
+
 ### Known solver limitations
 
 - It currently requires the question and controls to be rendered in the DOM.
