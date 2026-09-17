@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.14
+// @version      9.15
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.14</span>
+            <span>🤖 Seed Helper v9.15</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.14').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.15').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.14',
+            helperVersion: '9.15',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1910,12 +1910,12 @@
             // big-play overlay itself via the ancestor walk below.
             for (let i = 0; i < medias.length; i++) {
                     const m = medias[i];
-                    if (m.currentTime > 0 && m.currentTime >= m.duration - 0.5) {
-                        watchedMedia.add('media_' + i);
-                    }
                     const block   = m.closest('[id^="block-"]') || m.closest('[class*="block-"]') || m.parentElement;
                     const docY    = window.scrollY + m.getBoundingClientRect().top;
                     const mediaId = block ? (block.id || block.className || 'media_' + i) : ('media_' + Math.round(docY / 500));
+                    if (m.currentTime > 0 && m.duration > 0 && m.currentTime >= m.duration - 0.5) {
+                        watchedMedia.add(mediaId);
+                    }
                     if (watchedMedia.has(mediaId)) continue;
 
                     const att = mediaRetries[mediaId] || 0;
@@ -1935,24 +1935,35 @@
                         m.muted = true;
                         m.playbackRate = 16;
                         m.play().catch(() => {});
-                        setTimeout(() => {
-                            const d = m.duration;
-                            if (d > 0) {
-                                sendStatus('Scrubbing video...', '#a6e3a1', true);
-                                m.currentTime = d > 10 ? d - 5 : 0;
-                                ['seeking', 'seeked', 'timeupdate'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
 
-                                let checkCount = 0;
-                                const checkEnd = setInterval(() => {
-                                    checkCount++;
-                                    if (m.ended || m.currentTime >= m.duration - 0.5 || checkCount > 20) {
-                                        clearInterval(checkEnd);
-                                        ['timeupdate', 'ended'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
-                                        watchedMedia.add(mediaId);
-                                    }
-                                }, 500);
+                        // Watchdog: keep the video moving to the end. Handles
+                        // metadata not being ready, buffer stalls at 16x, and
+                        // Video.js re-pausing — none of which a one-shot
+                        // seek+poll can recover from.
+                        let lastT = -1, stalled = 0, checks = 0;
+                        const watchdog = setInterval(() => {
+                            checks++;
+                            if (m.ended || (m.duration > 0 && m.currentTime >= m.duration - 0.5)) {
+                                clearInterval(watchdog);
+                                ['timeupdate', 'ended'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
+                                watchedMedia.add(mediaId);
+                                sendStatus('Video finished.', '#a6e3a1', true);
+                                return;
                             }
-                        }, 3000);
+                            const d = m.duration;
+                            if (d > 10 && m.currentTime < d - 6) {
+                                sendStatus('Scrubbing video...', '#a6e3a1', true);
+                                m.currentTime = d - 5;
+                                ['seeking', 'seeked', 'timeupdate'].forEach(ev => m.dispatchEvent(new Event(ev, { bubbles: true })));
+                            }
+                            if (m.paused) { m.muted = true; m.play().catch(() => {}); }
+                            else if (m.currentTime === lastT) {
+                                stalled++;
+                                if (stalled >= 3) { m.currentTime = (m.currentTime || 0) + 0.5; m.play().catch(() => {}); stalled = 0; }
+                            } else stalled = 0;
+                            lastT = m.currentTime;
+                            if (checks > 90) clearInterval(watchdog);
+                        }, 500);
                     }, 800);
 
                     nextActionTime = now + 7000;
