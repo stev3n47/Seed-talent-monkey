@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.06
-// @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button.
+// @version      9.13
+// @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
 // @match        *://d1b20t6ufgwz51.cloudfront.net/*
@@ -23,7 +23,11 @@
         return String(GM_getValue(OPENROUTER_KEY_STORAGE, '') || '').trim();
     }
     const AUTO_SUBMIT_QUIZ = true;
-    const MODELS = [{ id: "nvidia/nemotron-3-super-120b-a12b:free", maxTok: 800 }];
+    const MODELS = [
+        { id: "nvidia/nemotron-3-super-120b-a12b:free", maxTok: 800 },
+        { id: "nvidia/nemotron-3-ultra-550b-a55b:free", maxTok: 800 },
+        { id: "openrouter/free",                        maxTok: 800 },
+    ];
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -135,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.06</span>
+            <span>🤖 Seed Helper v9.13</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -442,13 +446,21 @@
                 const fr = (e.data.incident && e.data.incident.frame) || '';
                 if (dbg) dbg.innerText = `unknown-idle: ${String(fr).slice(0, 200)}`;
             }
+            if (e.data.type === 'SEED_PAUSE_REQ') {
+                applyState('paused');
+                updateStatus('Paused — set an OpenRouter key with KEY, then press RESUME.', '#f38ba8');
+            }
+            if (e.data.type === 'SEED_QUIZ_PASSED') {
+                applyState('paused');
+                updateStatus(String(e.data.text || '✓ Quiz passed — course done, you can exit.').slice(0, 200), '#a6e3a1');
+            }
         });
 
         // Rebuild a bounded incident object from an untrusted cross-frame payload.
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.05').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.13').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -860,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.05',
+            helperVersion: '9.13',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1078,6 +1090,7 @@
     const recordedAttempts = new Set();
     const clickedNavs   = new Set();
     const interactedBlocks = {};
+    const lockedScrollAttempts = {};
     const watchedMedia  = new Set();
     const mediaRetries  = {};
     const takeAgainRetries = {};
@@ -1085,6 +1098,10 @@
     const unhandledSurfaces = new Set();
     const terminalPages = new Set();
     let stuckSince = 0;
+    let activeSolveQId = null;   // question currently being solved by the AI
+    const quizSolveFails = {};   // per-question AI-failure count (max 3 retries)
+    let passedQuizMsg = '';      // set when a results screen shows a passing score
+    let quizPassedReported = false;
 
     function loadPastFailures() {
         try {
@@ -1254,6 +1271,7 @@
         attempted.clear();
         clickedNavs.clear();
         Object.keys(interactedBlocks).forEach(k => delete interactedBlocks[k]);
+        Object.keys(lockedScrollAttempts).forEach(k => delete lockedScrollAttempts[k]);
         watchedMedia.clear();
         isSolving = false;
         nextActionTime = 0;
@@ -1262,6 +1280,10 @@
         unhandledSurfaces.clear();
         terminalPages.clear();
         idleIncidents.clear();
+        Object.keys(quizSolveFails).forEach(k => delete quizSolveFails[k]);
+        activeSolveQId = null;
+        passedQuizMsg = '';
+        quizPassedReported = false;
         stuckSince = 0;
     }
 
@@ -1367,21 +1389,23 @@
             return { type: 'matching', submitBtn, id: qId, col1: col1Btns, col2: col2Btns };
         }
         if (mcqLabels.length >= 2) {
-            let isMulti = true;
-            const firstInput = mcqLabels[0]?.querySelector('input[type="radio"], input[type="checkbox"]');
-
-            if (firstInput) {
-                isMulti = firstInput.type === 'checkbox';
-            } else if (mcqLabels[0].className.toLowerCase().includes('single')) {
-                isMulti = false;
-            } else if (mcqLabels[0].className.toLowerCase().includes('multiple') || mcqLabels[0].className.toLowerCase().includes('multi')) {
-                isMulti = true;
-            } else if (mcqLabels[0].querySelector('[role="radio"]') || mcqLabels[0].getAttribute('role') === 'radio') {
-                isMulti = false;
-            } else if (mcqLabels[0].querySelector('[role="checkbox"]') || mcqLabels[0].getAttribute('role') === 'checkbox') {
-                isMulti = true;
-            } else if (mcqLabels[0].closest('[role="radiogroup"]')) {
-                isMulti = false;
+            // Classify by the actual control type, scanning ALL wrappers then the
+            // container — a label whose input is a sibling (not a descendant) must
+            // not fall through to className heuristics. 'quiz-multiple-choice' is
+            // Rise's SINGLE-select class; only 'multiple-response' means multi.
+            let isMulti;
+            const wrapInputs = mcqLabels.map(el => el.querySelector('input[type="radio"], input[type="checkbox"]')).filter(Boolean);
+            const inputs = wrapInputs.length ? wrapInputs
+                : Array.from(container.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+            if (inputs.length) {
+                isMulti = inputs[0].type === 'checkbox';
+            } else {
+                const cn = String(mcqLabels[0].className || '').toLowerCase();
+                const roleRadio = mcqLabels[0].querySelector('[role="radio"]') || mcqLabels[0].getAttribute('role') === 'radio' || !!mcqLabels[0].closest('[role="radiogroup"]');
+                const roleCb = mcqLabels[0].querySelector('[role="checkbox"]') || mcqLabels[0].getAttribute('role') === 'checkbox';
+                if (cn.includes('multiple-choice') || cn.includes('single') || roleRadio) isMulti = false;
+                else if (cn.includes('multiple-response') || cn.includes('multi') || roleCb) isMulti = true;
+                else isMulti = false;
             }
 
             return { type: 'mcq', submitBtn, id: qId, labels: mcqLabels, isMulti };
@@ -1505,11 +1529,17 @@
             if (quiz && !attempted.has(quiz.id)) {
                 attempted.add(quiz.id);
                 sessionAttempts.add(quiz.id);
+                activeSolveQId = quiz.id;
                 sendStatus('Reading question...', '#f9e2af');
                 const delay = 1200 + Math.random() * 1200;
                 nextActionTime = now + delay + 1500;
                 setTimeout(() => {
-                    if (!isRunning()) return;
+                    if (!isRunning()) {
+                        attempted.delete(quiz.id);
+                        sessionAttempts.delete(quiz.id);
+                        if (activeSolveQId === quiz.id) activeSolveQId = null;
+                        return;
+                    }
                     if (quiz.type === 'mcq') solveQuiz(quiz.id, quiz.labels, quiz.submitBtn, quiz.isMulti);
                     else if (quiz.type === 'fill_in_blank') solveFillInTheBlank(quiz.id, quiz.input, quiz.submitBtn);
                     else solveMatchingQuestion(quiz.id, quiz.col1, quiz.col2, quiz.submitBtn);
@@ -1627,11 +1657,13 @@
 
                 if (cText.includes('YOU PASSED') || cText.includes('CONGRATULATIONS') || cText.match(/\bPASSED\b/) || pageText.includes('YOU PASSED') || pageText.includes('CONGRATULATIONS')) {
                     sendDebug('Quiz passed - ignoring Take Again button.');
+                    passedQuizMsg = 'Quiz passed';
                     return false;
                 }
 
                 if (cText.includes('100%') || pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d]*100%/)) {
                     sendDebug('Perfect score - ignoring Take Again button.');
+                    passedQuizMsg = 'Quiz passed with 100%';
                     return false;
                 }
 
@@ -1639,6 +1671,7 @@
                 const ps = pageText.match(/(?:PASSING|PASS MARK|PASSING SCORE|PASSING GRADE|TARGET)[^\d]*(\d+)/);
                 if (ys && ps && parseInt(ys[1]) >= parseInt(ps[1])) {
                     sendDebug(`Score ${ys[1]} >= ${ps[1]} - ignoring Take Again button.`);
+                    passedQuizMsg = `Quiz passed (score ${ys[1]} >= pass ${ps[1]})`;
                     return false;
                 }
 
@@ -1692,13 +1725,13 @@
                     takeAgainRetries[id] = (takeAgainRetries[id] || 0) + 1;
                     attempted.clear();
                     sessionAttempts.clear();
+                    Object.keys(quizSolveFails).forEach(k => delete quizSolveFails[k]);
                     isSolving = false;
                 }, 1000);
                 nextActionTime = now + 3500;
                 return;
             }
         }
-
 
         // ── PRIORITY C: Forward navigation (Continue/Next Lesson)
         const fwdCandidates = [];
@@ -1716,6 +1749,10 @@
             if (!isVisible(el)) return;
             const t = (el.innerText || el.textContent || '').trim().toUpperCase();
             if (t === 'SUBMIT') return;
+            // Intra-block carousel steppers belong to the interactive handler (C1).
+            // Forward-nav would claim them once via data-block-id navId, dedupe every
+            // later click, and keep hasUnlockedFwd true so C1 never runs.
+            if (el.matches('button.carousel-controls-next, button.carousel-controls-prev, button.carousel-controls-item-btn')) return;
             const cleanT = t.replace(/[^A-Z0-9\s]/g, '').trim();
             const isTerminal = isTerminalNavLabel(cleanT);
             const isFwd = !isTerminal && (
@@ -1763,6 +1800,21 @@
             return;
         }
 
+        // ── PRIORITY E: Quiz passed → report completion, then stop ─────
+        // Priority D proves a pass whenever it refuses a Take Again. A passed
+        // results screen with no forward control (only EXIT COURSE / TAKE AGAIN)
+        // would otherwise idle into unknown-idle. Runs after C so a results
+        // screen that still offers an enabled Continue/Next keeps navigating.
+        if (passedQuizMsg && !quizPassedReported && !hasUnlockedFwd) {
+            quizPassedReported = true;
+            const scorm = readScormSummary();
+            const suffix = scorm ? ` | cmi: ${scorm.completion || '?'}/${scorm.success || '?'}/${scorm.score || '?'}` : '';
+            const msg = `✓ ${passedQuizMsg}${suffix} — course done, you can exit.`;
+            sendStatus(msg, '#a6e3a1');
+            try { window.top.postMessage({ type: 'SEED_QUIZ_PASSED', text: msg }, '*'); } catch(e) {}
+            return;
+        }
+
         // ── PRIORITY C1: Interactive Blocks (Accordions, Tabs, Process, Carousel, Flashcards)
         // If forward path is locked or absent, click unread interactives to unlock it
         if (!hasUnlockedFwd) {
@@ -1771,10 +1823,12 @@
                 'button.accordion__title-text, ' +
                 'button.tab-nav__item, ' +
                 'button.process-control--next, ' +
+                'button.carousel-controls-next, ' +
                 'button.carousel-slider__control--next, ' +
                 'button.block-carousel__control--next, ' +
                 'button.labeled-graphic-marker, ' +
                 'button.flashcard__turn, ' +
+                'button.flashcard-side-flip__btn[id$="-front-flip-btn"], ' +
                 'button.blocks-slide-indicator__button, ' +
                 'button.blocks-gallery-grid__image, ' +
                 'button.interactive-grid__item, ' +
@@ -1818,7 +1872,7 @@
                 if (!t) t = (el.getAttribute('aria-label') || '').trim().substring(0, 30);
 
                 // Identifier uses block-id AND text so we can hit multiple tabs/accordions in same block
-                const intId = (block ? block.getAttribute('data-block-id') : 'int_' + Math.round(window.scrollY + el.getBoundingClientRect().top)) + '_' + t;
+                const intId = el.id || ((block ? block.getAttribute('data-block-id') : 'int_' + Math.round(window.scrollY + el.getBoundingClientRect().top)) + '_' + t);
 
                 const tries = interactedBlocks[intId] || 0;
                 if (tries >= 15) continue; // safety fallback for looping carousels/processes
@@ -1833,8 +1887,13 @@
                     }
                 } catch(e) {}
 
-                sendStatus('Completing interactive block...', '#f9e2af', true);
-                setTimeout(() => simulateHumanClick(el), 600 + Math.random() * 400);
+                const isFlashcardGrid = el.matches('button.flashcard-side-flip__btn[id$="-front-flip-btn"]');
+                // Sequential steppers must fire exactly one click: the full synthetic
+                // sequence + native click double-fires and can skip a step's onStep,
+                // leaving the block permanently incomplete.
+                const isStepperNext = el.matches('button.carousel-controls-next, button.process-control--next, button.carousel-slider__control--next, button.block-carousel__control--next');
+                sendStatus(isFlashcardGrid ? 'Flipping required card...' : isStepperNext ? 'Advancing process step...' : 'Completing interactive block...', '#f9e2af', true);
+                setTimeout(() => { if (isStepperNext) el.click(); else simulateHumanClick(el); }, 600 + Math.random() * 400);
                 nextActionTime = now + 1500;
                 return;
             }
@@ -1855,25 +1914,10 @@
                 } catch (e) {}
             }
 
-            // If we have a direct play button for an iframe/embed
-            for (const pb of playBtns) {
-                const block = pb.closest('[id^="block-"]') || pb.parentElement;
-                const docY  = window.scrollY + pb.getBoundingClientRect().top;
-                const mediaId = block ? (block.id || 'pb_' + Math.round(docY / 500)) : ('pb_' + Math.round(docY / 500));
-
-                if (watchedMedia.has(mediaId)) continue;
-
-                const att = mediaRetries[mediaId] || 0;
-                if (att >= 3) { watchedMedia.add(mediaId); continue; }
-                mediaRetries[mediaId] = att + 1;
-
-                sendStatus(`Clicking Play button (attempt ${att + 1})...`, '#f9e2af', true);
-                setTimeout(() => simulateHumanClick(pb), 800);
-                nextActionTime = now + 4000;
-                return;
-            }
-
-            // Normal <video> tag logic
+            // Normal <video> tag logic — runs first: it mutes, plays, and
+            // scrubs the real element (synthetic clicks on the overlay alone
+            // are rejected by autoplay policy), and it dismisses any
+            // big-play overlay itself via the ancestor walk below.
             for (let i = 0; i < medias.length; i++) {
                     const m = medias[i];
                     if (m.currentTime > 0 && m.currentTime >= m.duration - 0.5) {
@@ -1925,6 +1969,25 @@
                 }
             }
 
+            // Play button with no <video> in its block — iframe/embed only.
+            for (const pb of playBtns) {
+                const block = pb.closest('[id^="block-"]') || pb.parentElement;
+                if (block && block.querySelector('video, audio')) continue;
+                const docY  = window.scrollY + pb.getBoundingClientRect().top;
+                const mediaId = block ? (block.id || 'pb_' + Math.round(docY / 500)) : ('pb_' + Math.round(docY / 500));
+
+                if (watchedMedia.has(mediaId)) continue;
+
+                const att = mediaRetries[mediaId] || 0;
+                if (att >= 3) { watchedMedia.add(mediaId); continue; }
+                mediaRetries[mediaId] = att + 1;
+
+                sendStatus(`Clicking Play button (attempt ${att + 1})...`, '#f9e2af', true);
+                setTimeout(() => simulateHumanClick(pb), 800);
+                nextActionTime = now + 4000;
+                return;
+            }
+
         // ── PRIORITY F: Locked Continue Button Scroll ───
         if (!hasUnlockedFwd) {
             const lockedBtn = fwdCandidates.find(el => {
@@ -1934,11 +1997,20 @@
             if (lockedBtn) {
                 const rect = lockedBtn.getBoundingClientRect();
                 if (rect.bottom > window.innerHeight - 100) {
-                    sendStatus('Scrolling to locked Continue button...', '#f9e2af', true);
                     const scroller = lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
-                    scroller.scrollTop += 250;
-                    nextActionTime = now + 1500;
-                    return;
+                    const lockKey = clipStr(frameOriginPath() + '|' + (lockedBtn.getAttribute('class') || '') + '|' + (lockedBtn.getAttribute('aria-label') || lockedBtn.innerText || ''), 240);
+                    const attempts = lockedScrollAttempts[lockKey] || 0;
+                    if (attempts < 10) {
+                        const before = scroller.scrollTop;
+                        scroller.scrollTop += 250;
+                        const after = scroller.scrollTop;
+                        if (after !== before) {
+                            lockedScrollAttempts[lockKey] = attempts + 1;
+                            sendStatus('Scrolling to locked Continue button...', '#f9e2af', true);
+                            nextActionTime = now + 1500;
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -1947,6 +2019,9 @@
             stuckSince = 0;
             sendStatus('Forward path open — waiting for transition...', '#a6e3a1', true);
         } else {
+            // An in-flight AI solve/retry can legitimately exceed the idle
+            // thresholds — it is work in progress, not a stall.
+            if (isSolving) stuckSince = 0;
             if (!stuckSince) stuckSince = now;
             // Only probe for unsupported surfaces after 5s idle, so normal
             // handlers and page transitions get first chance.
@@ -2059,9 +2134,12 @@
 
                     const applyNums = async (nums) => {
                         if (nums.length === 0) {
-                            sendStatus('Could not parse AI answer. Retrying in 5s...', '#f38ba8');
-                            setTimeout(() => { isSolving = false; attempted.delete(questionId); }, 5000);
+                            releaseFailedQuestion('Could not parse AI answer.', questionId);
                             return;
+                        }
+                        if (!isMulti && nums.length > 1) {
+                            sendDebug(`Single-select received ${nums.length} answers — capping to first (${nums[0]})`);
+                            nums = nums.slice(0, 1);
                         }
 
                         const plain = optionLabels.map(el => getText(el));
@@ -2129,7 +2207,7 @@
                                 isSolving = false;
                             } catch (err) {
                                 sendDebug('ERROR in applyNums: ' + err.toString());
-                                isSolving = false;
+                                releaseFailedQuestion('Solver error.', questionId);
                             }
                         })();
                     };
@@ -2158,6 +2236,15 @@
                     return;
                 }
             }
+        }
+
+        // A prior submit already recorded the driver-verified correct answer.
+        const scormNums = scormAnswerNums(questionId, optionLabels.map(el => getText(el)));
+        if (scormNums) {
+            sendDebug('SCORM correct-response hit: ' + scormNums.join(', '));
+            sendStatus('Applying recorded correct answer...', '#a6e3a1');
+            applyNums(scormNums);
+            return;
         }
 
         callOpenRouter(sysMsg, userMsg, 0, (aiText) => {
@@ -2260,6 +2347,15 @@
             }
         }
 
+        // A prior submit already recorded the driver-verified correct answer.
+        const scormAns = scormAnswerText(questionId);
+        if (scormAns) {
+            sendDebug('SCORM correct-response hit.');
+            sendStatus('Applying recorded correct answer...', '#a6e3a1');
+            await applyAnswer(scormAns);
+            return;
+        }
+
         callOpenRouter(sysMsg, userMsg, 0, async (aiText) => {
             const answer = aiText.trim();
             sendDebug('AI: "' + answer + '"');
@@ -2313,8 +2409,7 @@
         const RT = col2.map((el, i) => `R${i + 1}: ${col2Texts[i]}`);
 
         if (!LT.length || !RT.length) {
-            sendStatus('Could not read matching columns.', '#f38ba8');
-            isSolving = false;
+            releaseFailedQuestion('Could not read matching columns.', questionId);
             return;
         }
 
@@ -2337,17 +2432,12 @@
 
         sendStatus('Asking AI for matches...', '#89b4fa');
 
-        callOpenRouter(
-            'You solve matching quizzes. Output ONLY pairs as L#,R# one per line. No words, no explanations.',
-            userMsg,
-            0,
-            async (aiText) => {
+        const applyAiText = async (aiText) => {
                 const cleaned = aiText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
                 const pairs   = [...cleaned.matchAll(/L(\d+)\s*[,→\-:]\s*R(\d+)/gi)];
 
                 if (!pairs.length) {
-                    sendStatus('AI parse fail on matching. Retrying in 5s...', '#f38ba8');
-                    setTimeout(() => { isSolving = false; attempted.delete(questionId); }, 5000);
+                    releaseFailedQuestion('AI parse fail on matching.', questionId);
                     return;
                 }
 
@@ -2393,7 +2483,22 @@
                 await sleep(1200 + Math.random() * 800);
                 if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
                 isSolving = false;
-            }
+        };
+
+        // A prior submit already recorded the driver-verified correct pairs.
+        const scormPairs = scormMatchingPairs(questionId, col1Texts, col2Texts);
+        if (scormPairs) {
+            sendDebug('SCORM correct-response hit: ' + scormPairs.length + ' pairs');
+            sendStatus('Applying recorded correct matches...', '#a6e3a1');
+            applyAiText(scormPairs.map(p => `L${p.l},R${p.r}`).join('\n'));
+            return;
+        }
+
+        callOpenRouter(
+            'You solve matching quizzes. Output ONLY pairs as L#,R# one per line. No words, no explanations.',
+            userMsg,
+            0,
+            applyAiText
         );
     }
 
@@ -2479,11 +2584,137 @@
         return { text: out.trim() };
     }
 
+    // Finds the SCORM API object. The content frame's parent is the same-origin
+    // CloudFront launcher, which hosts the SCORM driver as a sibling frame.
+    function findScormApi() {
+        const probe = w => { try { if (w.API_1484_11) return w.API_1484_11; if (w.API) return w.API; } catch(e) {} return null; };
+        try {
+            const p = window.parent;
+            if (p && p !== window) {
+                let hit = probe(p);
+                if (hit) return hit;
+                for (let i = 0; i < p.frames.length; i++) {
+                    hit = probe(p.frames[i]);
+                    if (hit) return hit;
+                }
+            }
+        } catch(e) {}
+        return probe(window);
+    }
+    function scormGet(api, n) { try { return api.GetValue(n); } catch(e) { try { return api.LMSGetValue(n); } catch(e2) { return ''; } } }
+
+    // Best-effort read of what the player actually wrote to the LMS, for the
+    // quiz-passed report.
+    function readScormSummary() {
+        const api = findScormApi();
+        if (!api) return null;
+        return {
+            completion: scormGet(api, 'cmi.completion_status') || scormGet(api, 'cmi.core.lesson_status'),
+            success:    scormGet(api, 'cmi.success_status'),
+            score:      scormGet(api, 'cmi.score.scaled') || scormGet(api, 'cmi.core.score.raw')
+        };
+    }
+
+    // ── SCORM-verified answers ─────────────────────────────────────────
+    // Every submitted question writes cmi.interactions.N.correct_responses.0.pattern
+    // (e.g. "urn:scormdriver:Lower-cost"). On a Take Again retry the correct
+    // answer is already recorded — apply it directly instead of asking the AI.
+    const scormNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const scormNormQuestion = s => scormNorm(String(s || '').replace(
+        /^\s*(true\s*[/ ]?\s*(?:or\s*[/ ]?\s*)?false|multiple\s*choice|multiple\s*response|select\s*all\s*that\s*apply|fill\s*in\s*the\s*blank|matching)\s*[:.\-–—]?\s*/i, ''));
+
+    function findPriorInteraction(qId) {
+        const api = findScormApi();
+        if (!api) return null;
+        const count = parseInt(scormGet(api, 'cmi.interactions._count'), 10);
+        if (!count || count > 400) return null;
+        const target = scormNormQuestion(qId);
+        if (!target) return null;
+        for (let i = count - 1; i >= 0; i--) {   // latest attempt wins
+            const desc = scormNormQuestion(scormGet(api, `cmi.interactions.${i}.description`));
+            if (desc && (desc === target || desc.includes(target) || target.includes(desc))) {
+                const pattern = scormGet(api, `cmi.interactions.${i}.correct_responses.0.pattern`);
+                if (pattern) return { pattern, type: scormGet(api, `cmi.interactions.${i}.type`), index: i };
+            }
+        }
+        return null;
+    }
+
+    const scormPatternParts = pattern =>
+        String(pattern).split('[,]').map(s => s.trim().replace(/^urn:scormdriver:/i, '')).filter(Boolean);
+
+    // MCQ: map each pattern part to an option index (1-based). Text-normalized,
+    // so it survives option reshuffling between attempts.
+    function scormAnswerNums(qId, plainOpts) {
+        const hit = findPriorInteraction(qId);
+        if (!hit) return null;
+        const nums = [];
+        for (const p of scormPatternParts(hit.pattern)) {
+            const idx = plainOpts.findIndex(o => scormNorm(o) === scormNorm(p));
+            if (idx === -1) return null;
+            nums.push(idx + 1);
+        }
+        return nums.length ? nums : null;
+    }
+
+    // Fill-in-the-blank: first acceptable alternative. Driver escapes spaces as
+    // hyphens in the pattern.
+    function scormAnswerText(qId) {
+        const hit = findPriorInteraction(qId);
+        if (!hit) return null;
+        const parts = scormPatternParts(hit.pattern);
+        return parts[0] ? parts[0].replace(/-/g, ' ') : null;
+    }
+
+    // Matching: pattern is "src[.]dst[,]src[.]dst..." → {l, r} index pairs.
+    function scormMatchingPairs(qId, col1Texts, col2Texts) {
+        const hit = findPriorInteraction(qId);
+        if (!hit) return null;
+        const pairs = [];
+        for (const p of scormPatternParts(hit.pattern)) {
+            const seg = p.split('[.]');
+            if (seg.length !== 2) return null;
+            const l = col1Texts.findIndex(t => scormNorm(t) === scormNorm(seg[0]));
+            const r = col2Texts.findIndex(t => scormNorm(t) === scormNorm(seg[1]));
+            if (l === -1 || r === -1) return null;
+            pairs.push({ l: l + 1, r: r + 1 });
+        }
+        return pairs.length ? pairs : null;
+    }
+
+    // Releases a question whose AI solve failed so Priority A can retry it.
+    // Bounded: after 3 failures the question stays in `attempted` and the
+    // stall pipeline reports it instead of retrying forever.
+    function releaseFailedQuestion(statusMsg, qid) {
+        const id = qid || activeSolveQId;
+        if (id) {
+            const n = (quizSolveFails[id] || 0) + 1;
+            quizSolveFails[id] = n;
+            if (n < 3) {
+                attempted.delete(id);
+                sendDebug(`AI solve failed for ${id.substring(0, 20)} (${n}/3). Will retry.`);
+            } else {
+                sendDebug(`AI solve failed 3x for ${id.substring(0, 20)}. Not retrying.`);
+            }
+        }
+        if (activeSolveQId === id) activeSolveQId = null;
+        isSolving = false;
+        nextActionTime = Date.now() + 6000;
+        sendStatus(statusMsg, '#f38ba8');
+    }
+
     function callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry = 0) {
         const apiKey = getOpenRouterApiKey();
-        if (!apiKey) { isSolving = false; sendStatus('Set an OpenRouter key with KEY first.', '#f38ba8'); return; }
+        if (!apiKey) {
+            if (activeSolveQId) { attempted.delete(activeSolveQId); activeSolveQId = null; }
+            isSolving = false;
+            sendStatus('Set an OpenRouter key with KEY, then press RESUME.', '#f38ba8');
+            try { window.top.postMessage({ type: 'SEED_PAUSE_REQ' }, '*'); } catch(e) {}
+            return;
+        }
         const model = MODELS[modelIdx] || MODELS[0];
-        sendStatus(retry > 0 ? `Retrying AI (${retry}/3)...` : 'Asking AI...', '#89b4fa');
+        const modelTag = model.id.split('/').pop().replace(':free', '');
+        sendStatus(retry > 0 ? `Retrying AI (${retry}/3)...` : `Asking AI (${modelTag})...`, '#89b4fa');
 
         GM_xmlhttpRequest({
             method: 'POST',
@@ -2506,17 +2737,30 @@
                 if (r.error || !r.text) {
                     const err = String(r.error || 'empty').toLowerCase();
                     sendDebug('AI error: ' + err);
-                    const retryable = err.includes('overloaded') || err.includes('503') || err.includes('too many') || err.includes('empty');
+                    const retryable = err.includes('overloaded') || err.includes('503') || err.includes('too many') || err.includes('rate') || err.includes('empty');
                     if (retry < 3 && retryable) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000 * (retry + 1)); return; }
                     if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
-                    isSolving = false;
-                    sendStatus('AI unavailable. Please refresh.', '#f38ba8');
+                    releaseFailedQuestion('AI unavailable. Please refresh.');
                     return;
                 }
-                onSuccess(r.text);
+                try {
+                    const p = onSuccess(r.text);
+                    if (p && typeof p.catch === 'function') p.catch(err => { sendDebug('Solver error: ' + err); releaseFailedQuestion('Solver error.'); });
+                } catch (err) {
+                    sendDebug('Solver error: ' + err);
+                    releaseFailedQuestion('Solver error.');
+                }
             },
-            onerror()  { if (retry < 3) setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); else { isSolving = false; sendStatus('Network error.', '#f38ba8'); } },
-            ontimeout() { if (retry < 3) setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); else { isSolving = false; sendStatus('AI timed out.', '#f38ba8'); } }
+            onerror()  {
+                if (retry < 3) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); return; }
+                if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
+                releaseFailedQuestion('Network error.');
+            },
+            ontimeout() {
+                if (retry < 3) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); return; }
+                if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
+                releaseFailedQuestion('AI timed out.');
+            }
         });
     }
 
