@@ -428,6 +428,18 @@ Purely additive diagnostics (no runner-logic changes):
 - Debug text switched to monospace for readable timestamps.
 - All element IDs unchanged — zero JS handler breakage; SNIFF's inline-style toggle still overrides the class styles.
 
+### Panel/diagnostics hardening pass 2 (ui-panel-refresh branch)
+
+- **START contrast**: white on `#40a02b` failed WCAG AA normal text (<4.5:1); changed to `#2e7d32` (verified ≥4.5:1 with the a11y contrast checker). All other catppuccin pairs pass AA; only AAA-normal fails on KEY/NUKE/DEBUG (beyond scope).
+- **LOGS window injection**: `renderStatsBody` interpolated question/option/attempt text into `innerHTML` unescaped — a course string containing `<`/`</` breaks layout or injects markup; a `</script>` inside question text breaks out of the embedded `historyData` JSON. Added `escH()` escaping for every interpolated value and `JSON.stringify(history).replace(/</g,'\\u003c')` for the script embed.
+- **CSV `Source` column**: attempts' `src` (courseData/history/scorm/ai) now exports alongside Result/Guess.
+- **Blob URL leaks**: `URL.revokeObjectURL` added after download clicks in panel `downloadJson` and the logs-window CSV exporter.
+- **`courseTextAccumulator` cap**: unbounded `Set` of 1000-char snippets → capped at 300 entries (FIFO evict) — long courses can't grow panel memory without limit.
+- **Incident persistence**: `storeIncident` now also writes `seed_last_incident` to GM and the panel restores it on load — INCIDENT button + download survive page reloads.
+- **Panel persistence**: drag position saved on mouseup (`seed_panel_pos`, clamped on restore) and collapse state saved (`seed_panel_collapsed`) — the panel comes back where the operator left it.
+- **Incident debug lines**: the three pause handlers wrote `dbg.innerText` directly, clobbering the rolling 5-line buffer — now routed through `pushDebug`.
+- **Dump/DIAG payload** now embeds `incident` alongside meta/events/journal/diags.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.

@@ -206,7 +206,7 @@
           <div id="st-btn-row" style="display:flex;gap:8px;margin-bottom:10px;">
             <!-- START state: one big green button -->
             <button id="st-start" type="button" aria-label="Start auto-run" style="
-                flex:1;padding:8px 0;background:#40a02b;border:none;border-radius:8px;
+                flex:1;padding:8px 0;background:#2e7d32;border:none;border-radius:8px;
                 color:#fff;font-size:13px;font-weight:bold;cursor:pointer;">
               ▶ START
             </button>
@@ -252,6 +252,15 @@
         const resumeBtn = document.getElementById('st-resume');
         const stop2Btn  = document.getElementById('st-stop2');
         const incidentBtn = document.getElementById('st-incident');
+
+        // Restore the last persisted incident so the download survives reloads
+        try {
+            const persisted = JSON.parse(GM_getValue('seed_last_incident', 'null'));
+            if (persisted && typeof persisted === 'object') {
+                latestIncident = persisted;
+                if (incidentBtn) incidentBtn.style.display = 'inline-block';
+            }
+        } catch (e) {}
 
         function applyState(newState) {
             state = newState;
@@ -322,6 +331,9 @@
             if (isDragging) {
                 isDragging = false;
                 header.style.cursor = 'grab';
+                try {
+                    GM_setValue('seed_panel_pos', JSON.stringify({ left: parseFloat(panel.style.left), top: parseFloat(panel.style.top) }));
+                } catch(e) {}
             }
         });
 
@@ -336,8 +348,20 @@
                 collapseBtn.setAttribute('aria-expanded', String(collapsed));
                 collapseBtn.title = collapsed ? 'Collapse panel' : 'Expand panel';
                 collapseBtn.setAttribute('aria-label', collapseBtn.title);
+                try { GM_setValue('seed_panel_collapsed', collapsed ? '' : '1'); } catch(e) {}
             });
         }
+
+        // Restore persisted position + collapsed state
+        try {
+            const pos = JSON.parse(GM_getValue('seed_panel_pos', 'null'));
+            if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+                panel.style.bottom = 'auto'; panel.style.right = 'auto';
+                panel.style.left = Math.min(Math.max(pos.left, 40 - panel.offsetWidth), window.innerWidth - 40) + 'px';
+                panel.style.top = Math.min(Math.max(pos.top, 0), window.innerHeight - Math.min(panel.offsetHeight, 40)) + 'px';
+            }
+            if (GM_getValue('seed_panel_collapsed', '') === '1' && collapseBtn) collapseBtn.click();
+        } catch(e) {}
 
         document.getElementById('st-key').addEventListener('click', () => {
             const input = prompt('Enter your replacement OpenRouter API key. Leave blank to remove the saved key.', '');
@@ -447,9 +471,11 @@
         const downloadJson = (name, obj) => {
             const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
+            const url = URL.createObjectURL(blob);
+            a.href = url;
             a.download = name;
             a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         };
         // Ask every frame to snapshot its state into GM, wait briefly, then
         // bundle network events + merged cross-frame journal + per-frame diags.
@@ -466,7 +492,8 @@
                     meta: { helperVersion: '9.28', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
-                    diags
+                    diags,
+                    incident: latestIncident || undefined
                 };
                 downloadJson('seed_' + (withEvents ? 'sniff' : 'diag') + '_' + Date.now() + '.json', payload);
                 updateStatus((withEvents ? 'Dumped ' + sniffEntries.length + ' requests + ' : 'Diag: ') + journal.length + ' journal entries, ' + Object.keys(diags).length + ' frames.', '#94e2d5');
@@ -490,9 +517,7 @@
             if (e.data.type === 'SEED_DEBUG') {
                 const el = document.getElementById('st-debug');
                 if (el) {
-                    dbgLines.push(String(e.data.text).slice(0, 200));
-                    if (dbgLines.length > 5) dbgLines.shift();
-                    el.innerText = dbgLines.join('\n');
+                    pushDebug(String(e.data.text).slice(0, 200));
                 }
             }
             if (e.data.type === 'SEED_MATCHES') {
@@ -507,6 +532,9 @@
                 if (text.length > 50) {
                     const snippet = text.substring(0, 1000);
                     courseTextAccumulator.add(snippet);
+                    if (courseTextAccumulator.size > 300) {
+                        courseTextAccumulator.delete(courseTextAccumulator.values().next().value);
+                    }
                 }
             }
             if (e.data.type === 'SEED_UNHANDLED') {
@@ -520,8 +548,7 @@
                     .map(x => String(x || '')).filter(Boolean).join(' | ').slice(0, 200);
                 applyState('paused');
                 updateStatus(`Paused — ${label} needs an adapter. Capture a screenshot and SNIFF/DUMP.`, '#f38ba8');
-                const dbg = document.getElementById('st-debug');
-                if (dbg) dbg.innerText = `${d.kind}: ${evText}`;
+                pushDebug(`${d.kind}: ${evText}`);
             }
             if (e.data.type === 'SEED_TERMINAL_PAGE') {
                 storeIncident(e.data.incident, 'terminal-page');
@@ -529,16 +556,14 @@
                 const evText = [ev.frame, ev.title].map(x => String(x || '')).filter(Boolean).join(' | ').slice(0, 200);
                 applyState('paused');
                 updateStatus('Paused — course exit/Bye page detected. Reload the course before retrying START.', '#f38ba8');
-                const dbg = document.getElementById('st-debug');
-                if (dbg) dbg.innerText = `terminal: ${evText}`;
+                pushDebug(`terminal: ${evText}`);
             }
             if (e.data.type === 'SEED_UNKNOWN_IDLE') {
                 storeIncident(e.data.incident, 'unknown-idle');
                 applyState('paused');
                 updateStatus('Paused — no supported action found. Download INCIDENT before using NUKE or leaving the course.', '#f38ba8');
-                const dbg = document.getElementById('st-debug');
                 const fr = (e.data.incident && e.data.incident.frame) || '';
-                if (dbg) dbg.innerText = `unknown-idle: ${String(fr).slice(0, 200)}`;
+                pushDebug(`unknown-idle: ${String(fr).slice(0, 200)}`);
             }
             if (e.data.type === 'SEED_PAUSE_REQ') {
                 applyState('paused');
@@ -626,6 +651,7 @@
                     frame: sanitizeIncidentUrl(en && en.frame)
                 }));
                 latestIncident = safe;
+                try { GM_setValue('seed_last_incident', JSON.stringify(safe)); } catch (e) {}
                 if (incidentBtn) incidentBtn.style.display = 'inline-block';
             } catch (e) {}
         }
@@ -633,6 +659,12 @@
         function updateStatus(t, c) {
             const el = document.getElementById('st-status');
             if (el) { el.innerText = t; if (c) el.style.color = c; }
+        }
+        function pushDebug(t) {
+            dbgLines.push(t);
+            if (dbgLines.length > 5) dbgLines.shift();
+            const el = document.getElementById('st-debug');
+            if (el) el.innerText = dbgLines.join('\n');
         }
         function broadcastState() {
             document.querySelectorAll('iframe').forEach(f => {
@@ -1331,6 +1363,9 @@
 
 
 
+    const escH = s => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
     function renderStatsBody(history) {
         let correctCount = 0; let wrongCount = 0;
         let totalQs = Object.keys(history).length;
@@ -1356,16 +1391,16 @@
             }
 
             let courseBadge = q.course && q.course !== 'Unknown Course' ?
-                `<span style="background:#b4befe; color:#1e1e2e; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 10px; font-weight: bold;">${q.course}</span>` : '';
+                `<span style="background:#b4befe; color:#1e1e2e; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 10px; font-weight: bold;">${escH(q.course)}</span>` : '';
 
             let card = `<div class="q-card">
-                <h3 style="margin-top:0; color:#89b4fa;">Q: ${qId}</h3>
-                <p style="margin:5px 0;">Type: <b>${q.type}</b> | Status: <span class="${statusClass}">${qStatus}</span> ${courseBadge}</p>`;
+                <h3 style="margin-top:0; color:#89b4fa;">Q: ${escH(qId)}</h3>
+                <p style="margin:5px 0;">Type: <b>${escH(q.type)}</b> | Status: <span class="${statusClass}">${qStatus}</span> ${courseBadge}</p>`;
 
             if (q.knownCorrect) {
                 card += `<div style="background: rgba(166, 227, 161, 0.1); border-left: 4px solid #a6e3a1; padding: 10px; margin: 10px 0; border-radius: 4px;">
                     <b style="color: #a6e3a1;">✅ Revealed Correct Answer:</b><br>
-                    <span style="font-family: monospace;">${JSON.stringify(q.knownCorrect)}</span>
+                    <span style="font-family: monospace;">${escH(JSON.stringify(q.knownCorrect))}</span>
                 </div>`;
             }
 
@@ -1376,11 +1411,11 @@
 
             if (q.type === 'matching') {
                 card += `<li><b>Left:</b></li>`;
-                if(q.left) q.left.forEach(l => card += `<li>${l}</li>`);
+                if(q.left) q.left.forEach(l => card += `<li>${escH(l)}</li>`);
                 card += `<li><b>Right:</b></li>`;
-                if(q.right) q.right.forEach(r => card += `<li>${r}</li>`);
+                if(q.right) q.right.forEach(r => card += `<li>${escH(r)}</li>`);
             } else {
-                if(q.options) q.options.forEach(o => card += `<li>${o}</li>`);
+                if(q.options) q.options.forEach(o => card += `<li>${escH(o)}</li>`);
             }
 
             card += `</ul></div><div style="flex:1;"><h4 style="margin-bottom:5px;">Attempt History:</h4>`;
@@ -1390,10 +1425,10 @@
             } else {
                 q.attempts.forEach((a, i) => {
                     const resClass = a.result === 'Correct' ? 'correct' : 'incorrect';
-                    const srcBadge = a.src ? ` <span style="color:#b4befe;font-size:11px;font-weight:bold;">[${a.src}]</span>` : '';
+                    const srcBadge = a.src ? ` <span style="color:#b4befe;font-size:11px;font-weight:bold;">[${escH(a.src)}]</span>` : '';
                     card += `<div class="guess">
-                        <b>Attempt ${i+1}</b> - <span class="${resClass}">${a.result}</span>${srcBadge} <span style="color:#a6adc8;font-size:12px;">(${new Date(a.time).toLocaleTimeString()})</span><br>
-                        ${a.guess}
+                        <b>Attempt ${i+1}</b> - <span class="${resClass}">${escH(a.result)}</span>${srcBadge} <span style="color:#a6adc8;font-size:12px;">(${new Date(a.time).toLocaleTimeString()})</span><br>
+                        ${escH(a.guess)}
                     </div>`;
                 });
             }
@@ -1424,17 +1459,17 @@
             button:hover { opacity: 0.9; }
         </style>
         <script>
-            var historyData = ${JSON.stringify(history)};
+            var historyData = ${JSON.stringify(history).replace(/</g, '\\u003c')};
             function downloadCSV() {
-                let csv = "Course,Question,Type,Result,Guess,Time\\n";
+                let csv = "Course,Question,Type,Result,Source,Guess,Time\\n";
                 for (let q in historyData) {
                     const attempts = historyData[q].attempts || [];
                     const c = (historyData[q].course || 'Unknown').replace(/"/g, '""');
                     if (!attempts.length) {
-                        csv += '"' + c + '","' + q.replace(/"/g, '""') + '","' + historyData[q].type + '","Unanswered","",""\\n';
+                        csv += '"' + c + '","' + q.replace(/"/g, '""') + '","' + historyData[q].type + '","Unanswered","","",""\\n';
                     } else {
                         for (let a of attempts) {
-                            csv += '"' + c + '","' + q.replace(/"/g, '""') + '","' + historyData[q].type + '","' + a.result + '","' + (a.guess||'').replace(/"/g, '""') + '","' + a.time + '"\\n';
+                            csv += '"' + c + '","' + q.replace(/"/g, '""') + '","' + historyData[q].type + '","' + a.result + '","' + (a.src||'') + '","' + (a.guess||'').replace(/"/g, '""') + '","' + a.time + '"\\n';
                         }
                     }
                 }
@@ -1444,6 +1479,7 @@
                 a.href = url;
                 a.download = 'seed_talent_logs.csv';
                 a.click();
+                setTimeout(() => window.URL.revokeObjectURL(url), 1000);
             }
         </script>
         </head><body id="logs-body">
