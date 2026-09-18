@@ -323,6 +323,14 @@ Live inspection of the Birchmount Gift Card lesson (package `C0367`, lesson `eT-
 
 v9.20: adds `div.block-list__checkbox__hitarea[role="checkbox"]` to C1, skips `aria-checked="true"`, single-clicks it (the synthetic sequence would double-toggle it the same as a label), and gives each hitarea a per-index `intId` since they share block id + no text.
 
+### Legacy blocks-accordion variant (v9.21)
+
+Same course, next stall — "Tips for Successful Selling" (`hgjZzS4Qg_JPqtjrub9n3ZZT2QDG6dMs`): a `blocks-accordion` (`--legacy`) renders each item as `section.blocks-accordion__item--closed > button.blocks-accordion__header[aria-expanded]` — a third class family distinct from both prior accordion selectors (`accordion__title-text`). Verified live: one `el.click()` per header flips `aria-expanded` to `true`; all three open → divider unlocks.
+
+v9.21 adds `button.blocks-accordion__header` to C1 (the existing `aria-expanded === 'true'` skip covers opened items) and generalizes the single-click rule: **any C1 element bearing `aria-expanded` gets exactly one `el.click()`** — the synthetic sequence would dispatch a click *and* call `el.click()`, toggling it twice (open→closed). This is the third instance of the double-fire bug class (labels, role=checkbox hitareas, aria-expanded toggles).
+
+Also documented from this stall: the 15s unknown-idle incident is real but only counts *pure* idle — action windows (`nextActionTime`) reset `stuckSince`, and the report path is `SEED_UNKNOWN_IDLE` → pause + "Download INCIDENT" status, so a dump taken inside the window shows no incident yet.
+
 ### Known solver limitations
 
 - It currently requires the question and controls to be rendered in the DOM.
