@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.24
+// @version      9.25
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.24</span>
+            <span>🤖 Seed Helper v9.25</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.24').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.25').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.24',
+            helperVersion: '9.25',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -2287,6 +2287,17 @@
                         })();
                     };
 
+        // Rise exposes the full course model client-side (window.courseData) —
+        // correct answers included. Authoritative: check it before history,
+        // SCORM readback, and the AI. Works on attempt 1.
+        const cdNums = courseDataAnswerNums(questionId, optionLabels.map(el => getText(el)));
+        if (cdNums) {
+            sendDebug('Course-data answer hit: ' + cdNums.join(', '));
+            sendStatus('Applying recorded correct answer...', '#a6e3a1');
+            applyNums(cdNums);
+            return;
+        }
+
         const history = loadHistory();
         const past = history[questionId];
         if (past) {
@@ -2743,6 +2754,59 @@
             nums.push(idx + 1);
         }
         return nums.length ? nums : null;
+    }
+
+    // Rise ships the full course model to the client as base64 JSON on
+    // window.courseData — including each quiz question's correct answers.
+    // Deterministic ground truth that works on attempt 1 (the driver's
+    // correct_responses readback returns "" on this platform).
+    let _quizDefs = null;
+    function quizDefs() {
+        if (_quizDefs) return _quizDefs;
+        _quizDefs = [];
+        try {
+            const raw = window.courseData;
+            if (typeof raw === 'string' && raw.length > 100) {
+                const text = raw[0] === '{' ? raw
+                    : new TextDecoder().decode(Uint8Array.from(atob(raw), c => c.charCodeAt(0)));
+                const json = JSON.parse(text);
+                const walk = o => {
+                    if (!o || typeof o !== 'object') return;
+                    if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length))) {
+                        _quizDefs.push(o);
+                    }
+                    for (const k in o) walk(o[k]);
+                };
+                walk(json);
+            }
+        } catch(e) {}
+        return _quizDefs;
+    }
+
+    const htmlText = s => { const d = document.createElement('div'); d.innerHTML = String(s || ''); return d.textContent || ''; };
+
+    // Maps the rendered question to the course model's correct answers, then to
+    // 1-based option indices. MULTIPLE_RESPONSE uses `corrects` (the full set);
+    // single-choice uses `correct` — its `corrects` list can hold alternates.
+    function courseDataAnswerNums(qId, plainOpts) {
+        const target = scormNormQuestion(qId);
+        if (!target) return null;
+        for (const q of quizDefs()) {
+            const t = scormNormQuestion(htmlText(q.title));
+            if (!t || !(t === target || t.includes(target) || target.includes(t))) continue;
+            const ids = (q.type === 'MULTIPLE_RESPONSE' && Array.isArray(q.corrects) && q.corrects.length)
+                ? q.corrects : [q.correct];
+            const nums = [];
+            for (const id of ids) {
+                const ans = (q.answers || []).find(a => a.id === id);
+                if (!ans) { nums.length = 0; break; }
+                const idx = plainOpts.findIndex(o => scormNorm(o) === scormNorm(htmlText(ans.title)));
+                if (idx === -1) { nums.length = 0; break; }
+                nums.push(idx + 1);
+            }
+            if (nums.length) return nums;
+        }
+        return null;
     }
 
     // Fill-in-the-blank: first acceptable alternative. Driver escapes spaces as

@@ -362,6 +362,18 @@ SNIFF `1789754518016` (same C0443 quiz, ~20 interactions across 6 attempts) expo
 - User-visible pattern explained: "asks AI on some questions, not others" = the *history cache* (`past.attempts` with a `Correct` result) covering Q1/Q2/Q4 — Q3 was never correct so it re-asked the AI every time and got the same deterministic wrong combo.
 - Corollary: the SCORM `correct_responses` reuse path (v9.12) had never actually fired in production — every prior "retry" was the history cache plus AI luck. With the API reachable, `findPriorInteraction` can finally read `correct_responses` (which the SCO writes on every submit — 24 `SetValue` calls in this sniff alone), and the v9.23 `decodeURIComponent` fix makes the `%20`-encoded multi-word patterns match option text.
 
+### correct_responses readback returns "" — course model used instead (v9.25)
+
+SNIFF `1789755962239` confirmed the v9.24 frame-walk fix works — script-side `GetValue` calls finally appear (`_count`, `description`, `success_status`, `score.scaled`, `correct_responses`) — but exposed a platform limitation: **`cmi.interactions.N.correct_responses.0.pattern` returns `""` on every read**. This scormdriver build accepts the SCO's `SetValue` writes (visible in the sniff) but does not serve them back via `GetValue` — `correct_responses` is effectively write-only here, so the driver-reuse path can never supply answers on this platform.
+
+Replacement ground-truth source, verified live on the C0443 package: **`window.courseData`** in the scormcontent frame is a base64-encoded JSON of the entire course model. Every quiz question ships with `answers[]` (id + HTML title), `correct`, `corrects`, and `type`; the quiz block also carries `settings.passingScore` (80) and `shuffleAnswerChoices:false` (stable option indices). Decoded C0443 defs matched the SCO-recorded patterns exactly, including Q3's `corrects = {High THC Potency, Distillate Oil Only, No Artificial Flavors}`.
+
+Data-model subtlety that matters: on `MULTIPLE_CHOICE` questions `corrects` can list *wrong alternates* (Q2's `corrects` = {2, 0.25} while `correct` = 0.5, the SCO-verified answer). The resolver therefore uses `corrects` only for `MULTIPLE_RESPONSE` and `correct` otherwise.
+
+v9.25 adds `courseDataAnswerNums(qId, plainOpts)`: decodes `courseData` once (cached), walks for objects with `answers`+`correct`/`corrects`, fuzzy-matches the normalized question title, maps correct ids → answer titles → option indices. Wired **first** in the solve chain (before history cache, SCORM readback, and AI) — Rise MCQ/MR questions now answer deterministically on attempt 1, with no API key and no wrong-first-attempt cost. Non-Rise frames lack `courseData` → returns [] → existing chain unchanged.
+
+Limitations (documented, unfixed): fill-in-the-blank and matching solvers don't consume `courseData` yet — the defs exist there too (`answers`/`correct` shapes differ by type); the same walk can be extended if needed.
+
 ### SCORM-verified quiz retry confirmed in production (no version change) — SUPERSEDED
 
 This entry previously concluded the retry path was working; SNIFF `1789752054902` disproved that (see above). The `cmi.score.*` writes observed were attempt-1's own Commit, not a passing retake — no retake submission ever reached the driver.
