@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.23
+// @version      9.24
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.23</span>
+            <span>🤖 Seed Helper v9.24</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.23').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.24').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.23',
+            helperVersion: '9.24',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -2664,17 +2664,24 @@
     function findScormApi() {
         const probe = w => { try { if (w.API_1484_11) return w.API_1484_11; if (w.API) return w.API; } catch(e) {} return null; };
         try {
-            const p = window.parent;
-            if (p && p !== window) {
-                let hit = probe(p);
+            // The launcher hosts API_1484_11 on its own window — an ancestor of
+            // the content frame, not its parent. Walk up (like the driver's own
+            // SCORM2004_ScanParentsForApi), scanning each level's child frames.
+            let w = window;
+            for (let depth = 0; depth < 20 && w; depth++) {
+                let hit = probe(w);
                 if (hit) return hit;
-                for (let i = 0; i < p.frames.length; i++) {
-                    hit = probe(p.frames[i]);
-                    if (hit) return hit;
-                }
+                try {
+                    for (let i = 0; i < w.frames.length; i++) {
+                        hit = probe(w.frames[i]);
+                        if (hit) return hit;
+                    }
+                } catch(e) {}
+                if (!w.parent || w.parent === w) break;
+                w = w.parent;
             }
         } catch(e) {}
-        return probe(window);
+        return null;
     }
     function scormGet(api, n) { try { return api.GetValue(n); } catch(e) { try { return api.LMSGetValue(n); } catch(e2) { return ''; } } }
 
