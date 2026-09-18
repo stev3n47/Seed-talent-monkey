@@ -337,6 +337,10 @@ New course (Ozone Secret Agent Vape, package `C0443`, UTR 2813139): `blocks-flas
 
 v9.22 generalizes the flip selector to `.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn` (tag-agnostic — covers both `li.flashcard` grids and `div.flashcard` stacks/slides). Off-viewport slides are excluded by the existing horizontal-bounds `isVisible` check, so only the active slide's front flip is offered each tick — producing the required flip→arrow→flip sequence naturally.
 
+### SCORM-verified quiz retry confirmed in production (no version change)
+
+SNIFF `1789749565446` (Ozone C0443 quiz) shows the v9.12 retry path working end-to-end in the wild: attempt 1 submitted 4 `cmi.interactions` (2 correct, 2 incorrect — AI guessed "2 grams" vs correct "0.5" and over-selected on a multi-select) → 50% → genuine FAIL → bounded Take Again → retake reused the driver-recorded `correct_responses` → `cmi.score.*` + Commit written, `suspend_data` progressed to Summary. "Failed" and "passed" statuses are per-attempt, both genuine. Multi-select classified correctly (3 real checkbox answers recorded). Confirms: a first-attempt AI miss costs exactly one retry cycle; the retake is deterministic, not another guess.
+
 ### Known solver limitations
 
 - It currently requires the question and controls to be rendered in the DOM.
