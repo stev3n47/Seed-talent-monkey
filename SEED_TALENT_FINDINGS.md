@@ -440,6 +440,16 @@ Purely additive diagnostics (no runner-logic changes):
 - **Incident debug lines**: the three pause handlers wrote `dbg.innerText` directly, clobbering the rolling 5-line buffer — now routed through `pushDebug`.
 - **Dump/DIAG payload** now embeds `incident` alongside meta/events/journal/diags.
 
+### Panel pass 3 — state chip, shortcuts, badges, grants fix (ui-panel-refresh branch)
+
+- **CRITICAL grants fix**: `GM_listValues`/`GM_deleteValue` were missing from `@grant` — every journal/diag call (`mergedJournal`, `collectDiags`, key expiry) silently threw inside its try/catch, so the entire v9.28 diagnostics layer was dead. User caught the same fix on `main` — both branches patched.
+- **State chip**: `#st-state` pill in the header mirrors state (STOPPED/RUNNING/PAUSED) in matching color — readable at a glance, survives collapse, shows `RUNNING · mm:ss` elapsed (from `seed_runid`) for stall context.
+- **Keyboard shortcut**: `Ctrl+Shift+H` toggles collapse; ignored inside INPUT/TEXTAREA/contentEditable so course fields aren't hijacked.
+- **SNIFF badge**: live capture count (`st-sniff-count`) appears on the button while recording — confirms the sniffer is actually receiving events.
+- **Status accent bar**: `#st-status` gets a left border tinted with the status color — severity readable peripherally.
+- **st-matches**: `role="region"` + `aria-label` + a ✕ dismiss button (previously could only be hidden by the next status message).
+- **Toolbar separators**: 1px dividers split the tools row into actions / capture+export / config groups; NUKE stays isolated right.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.

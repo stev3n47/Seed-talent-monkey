@@ -12,6 +12,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_listValues
+// @grant        GM_deleteValue
 // ==/UserScript==
 
 (function () {
@@ -181,11 +183,14 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.28</span>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span>🤖 Seed Helper v9.28</span>
+                <span id="st-state" style="border:1px solid #f38ba8;color:#f38ba8;border-radius:10px;padding:0 7px;font-size:9px;font-weight:bold;letter-spacing:.5px;line-height:1.6;">STOPPED</span>
+            </div>
             <div style="display:flex;align-items:center;gap:8px;">
                 <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped" aria-label="Stopped"></span>
                 <button id="st-collapse" type="button" aria-expanded="true" aria-controls="st-body"
-                        title="Collapse panel" aria-label="Collapse panel"
+                        title="Collapse panel (Ctrl+Shift+H)" aria-label="Collapse panel"
                         style="background:none;border:none;color:#9399b2;font-size:12px;cursor:pointer;padding:2px 4px;">▾</button>
             </div>
           </div>
@@ -194,10 +199,12 @@
           <div id="st-tools" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
                 <button id="st-summary" type="button" class="st-tool" style="color:#f9e2af;border-color:#f9e2af;" title="Summarize collected course text with AI" aria-label="Summarize collected course text with AI">📝 SUMMARY</button>
                 <button id="st-logs" type="button" class="st-tool" style="color:#a6e3a1;border-color:#a6e3a1;" title="Open quiz-answer history window" aria-label="Open quiz-answer history window">📊 LOGS</button>
-                <button id="st-sniff" type="button" class="st-tool" style="color:#89dceb;border-color:#89dceb;" title="Record network traffic (find the completion API)" aria-label="Record network traffic">📡 SNIFF</button>
+                <span style="width:1px;height:16px;background:#45475a;"></span>
+                <button id="st-sniff" type="button" class="st-tool" style="color:#89dceb;border-color:#89dceb;" title="Record network traffic (find the completion API)" aria-label="Record network traffic">📡 SNIFF<span id="st-sniff-count" style="display:none;margin-left:4px;background:#89dceb;color:#1e1e2e;border-radius:8px;padding:0 5px;"></span></button>
                 <button id="st-dump" type="button" class="st-tool" style="color:#94e2d5;border-color:#94e2d5;" title="Download captured requests as JSON" aria-label="Download captured requests as JSON">⬇ DUMP</button>
                 <button id="st-diag" type="button" class="st-tool" style="color:#f5c2e7;border-color:#f5c2e7;" title="Download cross-frame state snapshot + action journal (no sniff needed)" aria-label="Download state snapshot and journal">⬇ DIAG</button>
                 <button id="st-incident" type="button" class="st-tool" style="display:none;color:#fab387;border-color:#fab387;" title="Download the latest sanitized stall report" aria-label="Download latest stall report">⬇ INCIDENT</button>
+                <span style="width:1px;height:16px;background:#45475a;"></span>
                 <button id="st-key" type="button" class="st-tool" style="color:#cba6f7;border-color:#cba6f7;" title="Set or remove the local OpenRouter API key" aria-label="Set or remove the local OpenRouter API key">KEY</button>
                 <button id="st-nuke" type="button" class="st-tool" style="margin-left:auto;color:#f38ba8;border-color:#f38ba8;" title="Instantly complete the entire course" aria-label="Instantly complete the entire course">🚀 NUKE</button>
           </div>
@@ -234,11 +241,15 @@
             </button>
           </div>
 
-          <div id="st-status" role="status" aria-live="polite" style="font-size:13px;color:#bac2de;line-height:1.4;">Stopped. Navigate to your course then click START.</div>
+          <div id="st-status" role="status" aria-live="polite" style="font-size:13px;color:#bac2de;line-height:1.4;border-left:3px solid #45475a;padding-left:8px;">Stopped. Navigate to your course then click START.</div>
           <div id="st-debug"  role="log" style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;white-space:pre-line;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;"></div>
 
-          <div id="st-matches" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #45475a;">
-            <div style="font-size:11px;font-weight:bold;color:#f9e2af;margin-bottom:6px;">💡 MATCHING ANSWERS:</div>
+          <div id="st-matches" role="region" aria-label="Matching answers" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #45475a;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <div style="font-size:11px;font-weight:bold;color:#f9e2af;">💡 MATCHING ANSWERS:</div>
+              <button id="st-matches-x" type="button" title="Dismiss" aria-label="Dismiss matching answers"
+                      style="background:none;border:none;color:#9399b2;font-size:11px;cursor:pointer;padding:0 2px;line-height:1;">✕</button>
+            </div>
             <pre id="st-matches-text" style="font-size:11px;color:#a6e3a1;font-family:monospace;white-space:pre-wrap;margin:0;line-height:1.6;"></pre>
           </div>
           </div>
@@ -288,6 +299,13 @@
                 updateStatus('Paused. Click RESUME to continue.', '#f9e2af');
             }
             dot.classList.toggle('seed-pulse', state === 'running');
+            const stateChip = document.getElementById('st-state');
+            if (stateChip) {
+                const chipColor = { stopped: '#f38ba8', running: '#a6e3a1', paused: '#f9e2af' }[state] || '#9399b2';
+                stateChip.textContent = state.toUpperCase();
+                stateChip.style.color = chipColor;
+                stateChip.style.borderColor = chipColor;
+            }
             broadcastState();
         }
 
@@ -362,6 +380,38 @@
             }
             if (GM_getValue('seed_panel_collapsed', '') === '1' && collapseBtn) collapseBtn.click();
         } catch(e) {}
+
+        // Ctrl+Shift+H toggles the panel (ignored while typing in page fields)
+        document.addEventListener('keydown', (e) => {
+            if (!e.ctrlKey || !e.shiftKey || e.key.toLowerCase() !== 'h') return;
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+            e.preventDefault();
+            if (collapseBtn) collapseBtn.click();
+        });
+
+        document.getElementById('st-matches-x').addEventListener('click', () => {
+            const mp = document.getElementById('st-matches');
+            if (mp) mp.style.display = 'none';
+        });
+
+        // Live capture count on the SNIFF button while recording
+        setInterval(() => {
+            const el = document.getElementById('st-sniff-count');
+            if (!el) return;
+            el.style.display = sniffOn ? 'inline-block' : 'none';
+            if (sniffOn) el.innerText = sniffEntries.length;
+        }, 2000);
+
+        // Elapsed run time on the state chip (stall context at a glance)
+        setInterval(() => {
+            const chip = document.getElementById('st-state');
+            if (!chip || state !== 'running') return;
+            const t0 = parseInt(GM_getValue('seed_runid', '0'), 10);
+            if (!t0) return;
+            const s = Math.floor((Date.now() - t0) / 1000);
+            chip.textContent = 'RUNNING · ' + String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+        }, 1000);
 
         document.getElementById('st-key').addEventListener('click', () => {
             const input = prompt('Enter your replacement OpenRouter API key. Leave blank to remove the saved key.', '');
@@ -658,7 +708,10 @@
 
         function updateStatus(t, c) {
             const el = document.getElementById('st-status');
-            if (el) { el.innerText = t; if (c) el.style.color = c; }
+            if (el) {
+                el.innerText = t;
+                if (c) { el.style.color = c; el.style.borderLeftColor = c; }
+            }
         }
         function pushDebug(t) {
             dbgLines.push(t);
