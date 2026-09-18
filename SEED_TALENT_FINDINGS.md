@@ -331,6 +331,12 @@ v9.21 adds `button.blocks-accordion__header` to C1 (the existing `aria-expanded 
 
 Also documented from this stall: the 15s unknown-idle incident is real but only counts *pure* idle — action windows (`nextActionTime`) reset `stuckSince`, and the report path is `SEED_UNKNOWN_IDLE` → pause + "Download INCIDENT" status, so a dump taken inside the window shows no incident yet.
 
+### Flashcard stack carousel — div vs li cards (v9.22)
+
+New course (Ozone Secret Agent Vape, package `C0443`, UTR 2813139): `blocks-flashcard--stack` is a **combined stepper+flip block** — `block-flashcards-slider__arrow--next` advances a slick carousel of `div.flashcard` cards, and each card must also be flipped (`flashcard-side-flip__btn` ×8 = 4 cards × front/back). The v9.17 slider arrow handled the stepping, but the v9.16 flip selector required `li.flashcard` — this variant renders `div.flashcard` inside `div.block-flashcards-slider__slide`, so the script stepped through all four cards without ever flipping and the divider never unlocked. Verified live: flip(visible slide)→next interleave satisfies the gate (the stack also exposes adjacent slide edges, so several front flips are clickable before the first next).
+
+v9.22 generalizes the flip selector to `.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn` (tag-agnostic — covers both `li.flashcard` grids and `div.flashcard` stacks/slides). Off-viewport slides are excluded by the existing horizontal-bounds `isVisible` check, so only the active slide's front flip is offered each tick — producing the required flip→arrow→flip sequence naturally.
+
 ### Known solver limitations
 
 - It currently requires the question and controls to be rendered in the DOM.
