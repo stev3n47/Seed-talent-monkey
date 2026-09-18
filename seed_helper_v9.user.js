@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.26
+// @version      9.27
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.26</span>
+            <span>🤖 Seed Helper v9.27</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.26').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.27').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.26',
+            helperVersion: '9.27',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1091,7 +1091,8 @@
     const clickedNavs   = new Set();
     const fwdClickLog   = new Map();
     const interactedBlocks = {};
-    const lockedScrollAttempts = {};
+    const pageSweepArmed = new Set();
+    const pageSweepDone  = new Set();
     const watchedMedia  = new Set();
     const mediaRetries  = {};
     const takeAgainRetries = {};
@@ -1273,7 +1274,8 @@
         clickedNavs.clear();
         fwdClickLog.clear();
         Object.keys(interactedBlocks).forEach(k => delete interactedBlocks[k]);
-        Object.keys(lockedScrollAttempts).forEach(k => delete lockedScrollAttempts[k]);
+        pageSweepArmed.clear();
+        pageSweepDone.clear();
         watchedMedia.clear();
         isSolving = false;
         nextActionTime = 0;
@@ -1425,6 +1427,9 @@
     // =========================================================
     // 7. MAIN LOOP
     // =========================================================
+    // Warm the course-model fetch now so quiz answer defs are resolved before
+    // the solver needs them (the __fetchCourse path is async).
+    try { quizDefs(); } catch(e) {}
     setInterval(() => {
         if (!isRunning()) return;
 
@@ -1825,6 +1830,10 @@
             } catch(e) {}
 
             sendStatus('Advancing...', '#a6e3a1', true);
+            // Lesson pages share one hash, so re-arm the Priority F view-sweep
+            // for whatever page this navigation lands on.
+            pageSweepArmed.clear();
+            pageSweepDone.clear();
             setTimeout(() => simulateHumanClick(el), 350 + Math.random() * 300);
             nextActionTime = now + 1500;
             return;
@@ -1867,7 +1876,7 @@
                 'button.blocks-gallery-grid__image, ' +
                 'button.interactive-grid__item, ' +
                 'label.block-list__option, ' +
-                'div.block-list__checkbox__hitarea[role="checkbox"]'
+                '.block-list [role="checkbox"]'
             );
 
             for (const el of interactives) {
@@ -1893,6 +1902,10 @@
                 if (el.matches('label.block-list__option')) {
                     const cb = el.querySelector('input[type="checkbox"]');
                     if (cb && cb.checked) continue;
+                    // Decorative label on a role=checkbox item — the role
+                    // element handles the toggle; clicking both double-fires.
+                    const item = el.closest('.block-list__item');
+                    if (item && item.querySelector('[role="checkbox"]')) continue;
                 }
 
                 const block = el.closest('[data-block-id]');
@@ -1910,10 +1923,10 @@
 
                 // Identifier uses block-id AND text so we can hit multiple tabs/accordions in same block
                 let intId = el.id || ((block ? block.getAttribute('data-block-id') : 'int_' + Math.round(window.scrollY + el.getBoundingClientRect().top)) + '_' + t);
-                // Checkbox hitareas share block + no text — index them so each box
-                // gets its own retry budget instead of sharing one intId.
-                if (el.matches('.block-list__checkbox__hitarea')) {
-                    intId += '_' + Array.from((block || document).querySelectorAll('.block-list__checkbox__hitarea')).indexOf(el);
+                // Checkbox controls share block + little text — index them so each
+                // box gets its own retry budget instead of sharing one intId.
+                if (el.matches('[role="checkbox"]')) {
+                    intId += '_' + Array.from((block || document).querySelectorAll('[role="checkbox"]')).indexOf(el);
                 }
 
                 const tries = interactedBlocks[intId] || 0;
@@ -1939,7 +1952,7 @@
                 // role=checkbox hitarea, or aria-expanded accordion each fires the
                 // toggle twice (check+uncheck / open+close = net nothing).
                 const isListOption = el.matches('label.block-list__option');
-                const isHitarea = el.matches('.block-list__checkbox__hitarea');
+                const isHitarea = el.matches('[role="checkbox"]');
                 const isToggle = el.getAttribute('aria-expanded') !== null;
                 sendStatus(isFlashcardGrid ? 'Flipping required card...' : isStepperNext ? 'Advancing process step...' : 'Completing interactive block...', '#f9e2af', true);
                 setTimeout(() => {
@@ -2069,22 +2082,33 @@
                 const locked = el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('locked') || el.classList.contains('continue-hint') || !!el.closest('.is-disabled, [disabled], .locked, [class*="locked"], [aria-disabled="true"]');
                 return locked && isVisible(el);
             });
-            if (lockedBtn) {
-                const rect = lockedBtn.getBoundingClientRect();
-                if (rect.bottom > window.innerHeight - 100) {
-                    const scroller = lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
-                    const lockKey = clipStr(frameOriginPath() + '|' + (lockedBtn.getAttribute('class') || '') + '|' + (lockedBtn.getAttribute('aria-label') || lockedBtn.innerText || ''), 240);
-                    const attempts = lockedScrollAttempts[lockKey] || 0;
-                    if (attempts < 10) {
-                        const before = scroller.scrollTop;
-                        scroller.scrollTop += 250;
-                        const after = scroller.scrollTop;
-                        if (after !== before) {
-                            lockedScrollAttempts[lockKey] = attempts + 1;
-                            sendStatus('Scrolling to locked Continue button...', '#f9e2af', true);
-                            nextActionTime = now + 1500;
-                            return;
-                        }
+            // Rise "completeAll" dividers render only a hint while locked — no
+            // button — so they never reach fwdCandidates. Their gate is every
+            // block above marked viewed by the scroller's IntersectionObserver;
+            // jump-scrolls to clickables skip over blocks, leaving them
+            // unviewed and the divider locked forever. Sweep the real scroller
+            // top→bottom once per page so each block dwells in view.
+            const scroller = (lockedBtn && lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]'))
+                || Array.from(document.querySelectorAll('.page-wrap, .page__wrapper, .lesson-main')).find(s => s.scrollHeight > s.clientHeight + 40)
+                || document.documentElement;
+            if (scroller && scroller.scrollHeight > scroller.clientHeight + 40) {
+                const pageKey = clipStr(frameOriginPath() + '|' + (location.hash || document.title || ''), 240);
+                if (!pageSweepDone.has(pageKey)) {
+                    if (!pageSweepArmed.has(pageKey)) {
+                        pageSweepArmed.add(pageKey);
+                        if (scroller.scrollTop > 60) scroller.scrollTop = 0;
+                        sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
+                        nextActionTime = now + 1500;
+                        return;
+                    }
+                    const before = scroller.scrollTop;
+                    scroller.scrollTop += 250;
+                    const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 5;
+                    if (scroller.scrollTop !== before || atBottom) {
+                        sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
+                        nextActionTime = now + 1500;
+                        if (atBottom) pageSweepDone.add(pageKey);
+                        return;
                     }
                 }
             }
@@ -2761,9 +2785,17 @@
     // Deterministic ground truth that works on attempt 1 (the driver's
     // correct_responses readback returns "" on this platform).
     let _quizDefs = null;
+    let _cdFetchStarted = false;
     function quizDefs() {
         if (_quizDefs) return _quizDefs;
         _quizDefs = [];
+        const walk = o => {
+            if (!o || typeof o !== 'object') return;
+            if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length))) {
+                _quizDefs.push(o);
+            }
+            for (const k in o) walk(o[k]);
+        };
         try {
             // Userscripts run in a sandbox: page globals live on unsafeWindow.
             // Fallback: the courseData = "..." assignment is inline in the DOM.
@@ -2777,15 +2809,18 @@
             if (typeof raw === 'string' && raw.length > 100) {
                 const text = raw[0] === '{' ? raw
                     : new TextDecoder().decode(Uint8Array.from(atob(raw), c => c.charCodeAt(0)));
-                const json = JSON.parse(text);
-                const walk = o => {
-                    if (!o || typeof o !== 'object') return;
-                    if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length))) {
-                        _quizDefs.push(o);
+                walk(JSON.parse(text));
+            } else if (!_cdFetchStarted) {
+                // Newer Rise builds (C1012) have no courseData global — the model
+                // loads via __fetchCourse(locale) → locales/*.js JSONP. Async, so
+                // defs populate for the next question, not this one.
+                _cdFetchStarted = true;
+                try {
+                    const win = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+                    if (typeof win.__fetchCourse === 'function') {
+                        win.__fetchCourse().then(cd => { _quizDefs = []; walk(cd); }).catch(() => {});
                     }
-                    for (const k in o) walk(o[k]);
-                };
-                walk(json);
+                } catch(e) {}
             }
         } catch(e) {}
         return _quizDefs;

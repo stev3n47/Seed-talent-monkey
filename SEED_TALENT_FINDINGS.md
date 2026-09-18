@@ -388,6 +388,23 @@ This entry previously concluded the retry path was working; SNIFF `1789752054902
 - The configured model may be unavailable, rate-limited, or changed by its provider.
 - Automatic selection still uses player-side clicks, input events, or drag events; it is automated but not a server-side/background-only assessment API.
 
+### Userscript sandbox cannot see window.courseData (v9.26)
+
+SNIFF `1789756673815` showed v9.25 still calling AI on every C0443 question: `window.courseData` is visible in page-context DevTools/Playwright but **invisible inside the Violentmonkey isolated world**. `quizDefs()` resolved [] → chain fell through to AI exactly as before. v9.26 reads `unsafeWindow.courseData` first, then `window.courseData`, then scrapes the inline `courseData = "..."` assignment out of `document.documentElement.innerHTML` (DOM is shared with the page; charset widened for URL-safe `+`/`/`/`=`/`-`/`_`).
+
+### C1012 "Ozone FX Gummies" stall — view-tracking gate + new selectors (v9.27)
+
+SNIFF `1789757768410` + live reproduction on package `C1012/1712676689937` ("Minor Cannabinoids" lesson, `SF1aSf-AKITJ9vwFaQjtssYfUx56_Dre`) exposed three distinct findings:
+
+- **Checkbox variant**: this package renders `div.block-list__option[role="checkbox"]` (the option div itself carries the role) — not `label.block-list__option`, not `div.block-list__checkbox__hitarea`. Selector generalized to `.block-list [role="checkbox"]`, with per-index retry IDs and single `.click()` for all role-checkbox controls (double-fire toggles them back off). Guard added: a `label.block-list__option` inside an item that also has `[role="checkbox"]` is skipped as decorative.
+- **`completeAll` divider = view-tracking gate**: the divider item is `{"type":"completeAll","title":"CONTINUE","completeHint":"..."}` — it unlocks only when **every block above has dwelled in the scroller viewport** (IntersectionObserver "viewed" marks, not just interactives done). Verified live: all checkboxes checked + all accordions open still left the gate locked; a paced top→bottom scroll of the real scroller unlocked it.
+- **The real scroller is `.page-wrap`** (`scrollHeight 3491` vs `clientHeight 861`). `.lesson-main`/`document`/`window` scrolls do nothing — every prior "scroll" in the isolated test silently no-opped.
+- **Locked state renders only a hint div — no button** (`button.continue-btn` appears *after* unlock). The hint never reached `fwdCandidates`, so old Priority F (which needed a locked button element) never engaged → no scroll → stall → idle.
+- v9.27 rewrites Priority F as a **top→bottom view-sweep** of the actual scroller, once per page (`pageSweepArmed`/`pageSweepDone`), whether or not a locked button exists. Lesson pages share one `location.hash`, so forward-nav clicks clear the sweep state to re-arm it for the next page.
+
+- **`window.courseData` absent on this build** — the course model loads via `window.__fetchCourse(locale)` → `locales/{name}.js` JSONP → `deserialize()`. `quizDefs()` now fires `__fetchCourse()` once when no `courseData` raw string exists; the same `walk()` finds defs in either model shape (C1012's 5-question MC quiz resolves all 5 defs). Fetch is async, so it is warmed at script start — first question may still fall through if it lands before resolution.
+- **suspend_data v2 is obfuscated**: `{"v":2,"d":[...numbers...],"cpv":"..."}` — `d` is a shifted char-code array (not plain ASCII, not simple ±index). Block-level progress could not be decoded; treated read-only.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
