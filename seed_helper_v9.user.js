@@ -156,6 +156,23 @@
         let latestIncident = null;
         const dbgLines = [];   // rolling last-N debug lines for the panel
         wrap.innerHTML = `
+        <style>
+          #seed-panel .st-tool{background:#313244;border:1px solid;border-radius:4px;
+            padding:4px 8px;font-size:10px;font-weight:bold;line-height:1.2;cursor:pointer;}
+          #seed-panel button{transition:filter .15s ease,transform .05s ease,background .15s ease,color .15s ease;}
+          #seed-panel button:hover{filter:brightness(1.25);}
+          #seed-panel button:active{transform:translateY(1px);}
+          #seed-panel button:focus-visible{outline:2px solid #89b4fa;outline-offset:1px;}
+          #seed-panel #st-dot{transition:background .3s ease;}
+          #seed-panel #st-dot.seed-pulse{animation:seedPulse 1.6s ease-in-out infinite;}
+          @keyframes seedPulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+          #seed-panel #st-debug::-webkit-scrollbar{width:6px;}
+          #seed-panel #st-debug::-webkit-scrollbar-thumb{background:#45475a;border-radius:3px;}
+          @media (prefers-reduced-motion:reduce){
+            #seed-panel button,#seed-panel #st-dot{transition:none;}
+            #seed-panel #st-dot.seed-pulse{animation:none;}
+          }
+        </style>
         <div id="seed-panel" style="position:fixed;bottom:20px;right:20px;z-index:999999;
              background:#1e1e2e;color:#cdd6f4;padding:14px 18px;border-radius:12px;
              font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -165,57 +182,65 @@
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
             <span>🤖 Seed Helper v9.28</span>
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-                <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
-                <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
-                <button id="st-key" style="background:#313244;color:#cba6f7;border:1px solid #cba6f7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Set or remove the local OpenRouter API key">KEY</button>
-                <button id="st-logs" style="background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📊 LOGS</button>
-                <button id="st-sniff" style="background:#313244;color:#89dceb;border:1px solid #89dceb;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Record network traffic (find the completion API)">📡 SNIFF</button>
-                <button id="st-dump" style="background:#313244;color:#94e2d5;border:1px solid #94e2d5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download captured requests as JSON">⬇ DUMP</button>
-                <button id="st-diag" style="background:#313244;color:#f5c2e7;border:1px solid #f5c2e7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download cross-frame state snapshot + action journal (no sniff needed)">⬇ DIAG</button>
-                <button id="st-incident" style="display:none;background:#313244;color:#fab387;border:1px solid #fab387;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download the latest sanitized stall report">⬇ INCIDENT</button>
-                <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped"></span>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped" aria-label="Stopped"></span>
+                <button id="st-collapse" type="button" aria-expanded="true" aria-controls="st-body"
+                        title="Collapse panel" aria-label="Collapse panel"
+                        style="background:none;border:none;color:#9399b2;font-size:12px;cursor:pointer;padding:2px 4px;">▾</button>
             </div>
+          </div>
+
+          <div id="st-body">
+          <div id="st-tools" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+                <button id="st-summary" type="button" class="st-tool" style="color:#f9e2af;border-color:#f9e2af;" title="Summarize collected course text with AI" aria-label="Summarize collected course text with AI">📝 SUMMARY</button>
+                <button id="st-logs" type="button" class="st-tool" style="color:#a6e3a1;border-color:#a6e3a1;" title="Open quiz-answer history window" aria-label="Open quiz-answer history window">📊 LOGS</button>
+                <button id="st-sniff" type="button" class="st-tool" style="color:#89dceb;border-color:#89dceb;" title="Record network traffic (find the completion API)" aria-label="Record network traffic">📡 SNIFF</button>
+                <button id="st-dump" type="button" class="st-tool" style="color:#94e2d5;border-color:#94e2d5;" title="Download captured requests as JSON" aria-label="Download captured requests as JSON">⬇ DUMP</button>
+                <button id="st-diag" type="button" class="st-tool" style="color:#f5c2e7;border-color:#f5c2e7;" title="Download cross-frame state snapshot + action journal (no sniff needed)" aria-label="Download state snapshot and journal">⬇ DIAG</button>
+                <button id="st-incident" type="button" class="st-tool" style="display:none;color:#fab387;border-color:#fab387;" title="Download the latest sanitized stall report" aria-label="Download latest stall report">⬇ INCIDENT</button>
+                <button id="st-key" type="button" class="st-tool" style="color:#cba6f7;border-color:#cba6f7;" title="Set or remove the local OpenRouter API key" aria-label="Set or remove the local OpenRouter API key">KEY</button>
+                <button id="st-nuke" type="button" class="st-tool" style="margin-left:auto;color:#f38ba8;border-color:#f38ba8;" title="Instantly complete the entire course" aria-label="Instantly complete the entire course">🚀 NUKE</button>
           </div>
 
           <!-- Button row — changes based on state -->
           <div id="st-btn-row" style="display:flex;gap:8px;margin-bottom:10px;">
             <!-- START state: one big green button -->
-            <button id="st-start" style="
+            <button id="st-start" type="button" aria-label="Start auto-run" style="
                 flex:1;padding:8px 0;background:#40a02b;border:none;border-radius:8px;
                 color:#fff;font-size:13px;font-weight:bold;cursor:pointer;">
               ▶ START
             </button>
             <!-- RUNNING state: pause + stop -->
-            <button id="st-pause" style="
+            <button id="st-pause" type="button" aria-label="Pause auto-run" style="
                 flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
                 color:#cdd6f4;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
               ⏸ PAUSE
             </button>
-            <button id="st-stop" style="
+            <button id="st-stop" type="button" aria-label="Stop auto-run" style="
                 flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
                 color:#f38ba8;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
               ⏹ STOP
             </button>
             <!-- PAUSED state: resume + stop -->
-            <button id="st-resume" style="
+            <button id="st-resume" type="button" aria-label="Resume auto-run" style="
                 flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
                 color:#a6e3a1;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
               ▶ RESUME
             </button>
-            <button id="st-stop2" style="
+            <button id="st-stop2" type="button" aria-label="Stop auto-run" style="
                 flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
                 color:#f38ba8;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
               ⏹ STOP
             </button>
           </div>
 
-          <div id="st-status" style="font-size:13px;color:#bac2de;line-height:1.4;">Stopped. Navigate to your course then click START.</div>
-          <div id="st-debug"  style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;white-space:pre-line;"></div>
+          <div id="st-status" role="status" aria-live="polite" style="font-size:13px;color:#bac2de;line-height:1.4;">Stopped. Navigate to your course then click START.</div>
+          <div id="st-debug"  role="log" style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;white-space:pre-line;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;"></div>
 
           <div id="st-matches" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #45475a;">
             <div style="font-size:11px;font-weight:bold;color:#f9e2af;margin-bottom:6px;">💡 MATCHING ANSWERS:</div>
             <pre id="st-matches-text" style="font-size:11px;color:#a6e3a1;font-family:monospace;white-space:pre-wrap;margin:0;line-height:1.6;"></pre>
+          </div>
           </div>
         </div>`;
         document.body.appendChild(wrap);
@@ -237,19 +262,23 @@
                 startBtn.style.display = 'flex';
                 dot.style.background = '#f38ba8';
                 dot.title = 'Stopped';
+                dot.setAttribute('aria-label', 'Stopped');
                 updateStatus('Stopped. Navigate to your course then click START.', '#bac2de');
             } else if (state === 'running') {
                 pauseBtn.style.display = 'flex';
                 stopBtn.style.display = 'flex';
                 dot.style.background = '#a6e3a1';
                 dot.title = 'Running';
+                dot.setAttribute('aria-label', 'Running');
             } else if (state === 'paused') {
                 resumeBtn.style.display = 'flex';
                 stop2Btn.style.display = 'flex';
                 dot.style.background = '#f9e2af';
                 dot.title = 'Paused';
+                dot.setAttribute('aria-label', 'Paused');
                 updateStatus('Paused. Click RESUME to continue.', '#f9e2af');
             }
+            dot.classList.toggle('seed-pulse', state === 'running');
             broadcastState();
         }
 
@@ -283,8 +312,11 @@
             if (!isDragging) return;
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
-            panel.style.left = (initialX + dx) + 'px';
-            panel.style.top = (initialY + dy) + 'px';
+            const w = panel.offsetWidth, h = panel.offsetHeight;
+            const nx = Math.min(Math.max(initialX + dx, 40 - w), window.innerWidth - 40);
+            const ny = Math.min(Math.max(initialY + dy, 0), window.innerHeight - Math.min(h, 40));
+            panel.style.left = nx + 'px';
+            panel.style.top = ny + 'px';
         });
         document.addEventListener('mouseup', () => {
             if (isDragging) {
@@ -292,6 +324,20 @@
                 header.style.cursor = 'grab';
             }
         });
+
+        // Collapse to a header-only pill (state still visible via the dot)
+        const collapseBtn = document.getElementById('st-collapse');
+        const panelBody = document.getElementById('st-body');
+        if (collapseBtn && panelBody) {
+            collapseBtn.addEventListener('click', () => {
+                const collapsed = panelBody.style.display === 'none';
+                panelBody.style.display = collapsed ? '' : 'none';
+                collapseBtn.textContent = collapsed ? '▾' : '▸';
+                collapseBtn.setAttribute('aria-expanded', String(collapsed));
+                collapseBtn.title = collapsed ? 'Collapse panel' : 'Expand panel';
+                collapseBtn.setAttribute('aria-label', collapseBtn.title);
+            });
+        }
 
         document.getElementById('st-key').addEventListener('click', () => {
             const input = prompt('Enter your replacement OpenRouter API key. Leave blank to remove the saved key.', '');

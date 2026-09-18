@@ -417,6 +417,17 @@ Purely additive diagnostics (no runner-logic changes):
 - **runId**: START stamps `seed_runid`; included in dump/diag meta so multiple files correlate to one session.
 - Panel debug line now shows the last 5 messages (rolling) instead of only the most recent.
 
+### Panel UI refresh (ui-panel-refresh branch)
+
+- Eight buttons were crammed into the drag header (`flex-wrap` pushed them against the title); they now live in a dedicated `#st-tools` row under the header, inside a new `#st-body` wrapper.
+- **Collapse toggle** (`#st-collapse`, ▾/▸): hides `#st-body` so the panel shrinks to a title+dot pill — the dot still communicates state while collapsed. `aria-expanded`/`aria-controls` wired.
+- **Danger separation**: NUKE is pushed to the far right of the tools row (`margin-left:auto`) so the destructive control is visually isolated from the download/config cluster. Its `confirm()` already existed.
+- **Accessibility**: every button has `type="button"` + `aria-label` (+ `title` tooltips); `#st-status` is `role="status" aria-live="polite"`, `#st-debug` is `role="log"`; dot `aria-label` syncs in `applyState`.
+- **Interaction polish**: scoped `<style>` block — `:focus-visible` outline, hover brightness, active translateY, 150ms transitions, running-dot pulse (`seedPulse`), `prefers-reduced-motion` honored, styled debug scrollbar. Repeated inline button styles collapsed into a `.st-tool` class.
+- **Drag clamping**: panel position is clamped so ≥40px stays on-screen — dragging it fully off-viewport used to lose it until reload.
+- Debug text switched to monospace for readable timestamps.
+- All element IDs unchanged — zero JS handler breakage; SNIFF's inline-style toggle still overrides the class styles.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
