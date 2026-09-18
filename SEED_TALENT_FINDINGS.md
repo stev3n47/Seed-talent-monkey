@@ -337,9 +337,23 @@ New course (Ozone Secret Agent Vape, package `C0443`, UTR 2813139): `blocks-flas
 
 v9.22 generalizes the flip selector to `.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn` (tag-agnostic — covers both `li.flashcard` grids and `div.flashcard` stacks/slides). Off-viewport slides are excluded by the existing horizontal-bounds `isVisible` check, so only the active slide's front flip is offered each tick — producing the required flip→arrow→flip sequence naturally.
 
-### SCORM-verified quiz retry confirmed in production (no version change)
+### Quiz false-pass + retry-loop defects (v9.23) — CORRECTS the entry below
 
-SNIFF `1789749565446` (Ozone C0443 quiz) shows the v9.12 retry path working end-to-end in the wild: attempt 1 submitted 4 `cmi.interactions` (2 correct, 2 incorrect — AI guessed "2 grams" vs correct "0.5" and over-selected on a multi-select) → 50% → genuine FAIL → bounded Take Again → retake reused the driver-recorded `correct_responses` → `cmi.score.*` + Commit written, `suspend_data` progressed to Summary. "Failed" and "passed" statuses are per-attempt, both genuine. Multi-select classified correctly (3 real checkbox answers recorded). Confirms: a first-attempt AI miss costs exactly one retry cycle; the retake is deterministic, not another guess.
+SNIFF `1789749565446` (Ozone C0443 quiz) showed attempt 1 submitting 4 `cmi.interactions` (2 correct, 2 incorrect — "2 grams" vs correct "0.5", and an over-selected multi-select) → 50% FAIL. The earlier entry read this as a healthy retry; SNIFF `1789752054902` (41 min later, same UTR 2813139) proved that wrong: **no interactions 4-7 ever appeared, `cmi.score.raw` stayed 50, `cmi.exit` stayed `suspend`, `progress` stayed 67, and no `cmi.completion_status`/`cmi.success_status` was ever sent** — yet `cmi.location` had moved to the next lesson and the panel had printed both "Retrying failed quiz..." and "✓ Quiz passed". The script declared a pass the course never recorded and abandoned the quiz mid-failure.
+
+Two defects found and fixed:
+
+1. **Score regex skipped a digit-less score into the pass mark.** Verified live on the C0443 package: the results screen can render `Your score undefined%` when the score doesn't interpolate, alongside `PASSING 80%`. The old `/(?:YOUR SCORE|…)[^\d]*(\d+)/` ran `[^\d]*` straight through `undefined%` and captured the pass mark's `80` → `80 >= 80` → false `passedQuizMsg` → Priority E reported "passed" → forward-nav left the lesson. Reproduced exactly (`ys=80, ps=80 → PASS`) on the real fail screen. Fixed by bounding the gap to `[^\d%]{0,30}` — digits must appear before the next `%` — for the `ys`, `ps`, and both `100%` checks (`cText.includes('100%')` had the same flaw whenever a course's pass mark is 100%).
+
+2. **Driver-authoritative veto added.** `cmi.success_status`/`cmi.score.scaled` now gate the DOM pass checks: `failed` (or `scaled*100` below the page's pass mark) forces RETRY even if DOM text looks like a pass; `passed` short-circuits to a genuine pass. In the real session `scaled` was `0.5` vs pass `80` — veto → Take Again → bounded retry, never a false abandon. Fail-open design: no API → DOM-only behavior as before.
+
+3. **Percent-encoded `correct_responses` defeated answer reuse.** scormdriver percent-encodes multi-word option identifiers — the captured Q3 pattern is literally `urn:scormdriver:High%20THC%20Potency[,]urn:scormdriver:Distillate%20Oil%20Only[,]…`. `scormNorm` strips non-alphanumerics, so `High%20THC%20Potency` normalized to `high20thc20potency` ≠ option text `highthcpotency` → `scormAnswerNums` returned null → the retake fell back to an AI re-guess on exactly the questions it had gotten wrong → repeated fails → the >2 loops observed. Single-word patterns (`True`, `0.5`, `Lower-cost`) always matched, which is why earlier verification looked clean. `scormPatternParts` now `decodeURIComponent`s each segment, making multi-word SCORM-verified answers deterministic.
+
+Regression check: the detection logic was replayed against the real fail-screen text (`undefined%`, real `50%`, real pass, `75/75 Congratulations`, stale-scaled-0.5-but-UI-passed) — all fail variants now resolve RETRY; genuine passes still detect; a stale low `scaled` with a passing UI errs toward one bounded extra retake rather than a false completion.
+
+### SCORM-verified quiz retry confirmed in production (no version change) — SUPERSEDED
+
+This entry previously concluded the retry path was working; SNIFF `1789752054902` disproved that (see above). The `cmi.score.*` writes observed were attempt-1's own Commit, not a passing retake — no retake submission ever reached the driver.
 
 ### Known solver limitations
 

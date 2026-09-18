@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.22
+// @version      9.23
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -139,7 +139,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.22</span>
+            <span>🤖 Seed Helper v9.23</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -460,7 +460,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.22').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.23').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -872,7 +872,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.22',
+            helperVersion: '9.23',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1657,21 +1657,43 @@
                 let container = b.closest('[class*="result"], [class*="quiz-card"]') || b.parentElement?.parentElement?.parentElement;
                 const cText = container ? container.innerText.toUpperCase() : '';
 
-                if (cText.includes('YOU PASSED') || cText.includes('CONGRATULATIONS') || cText.match(/\bPASSED\b/) || pageText.includes('YOU PASSED') || pageText.includes('CONGRATULATIONS')) {
+                // Driver state is authoritative: a committed fail vetoes any DOM
+                // "pass" (score can render as "undefined%" and mislead regexes).
+                let scormVeto = false;
+                const psPre = pageText.match(/(?:PASSING|PASS MARK|PASSING SCORE|PASSING GRADE|TARGET)[^\d%]{0,30}(\d+)/);
+                try {
+                    const api = findScormApi();
+                    if (api) {
+                        const succ = String(scormGet(api, 'cmi.success_status') || '').toLowerCase();
+                        const scaled = parseFloat(scormGet(api, 'cmi.score.scaled'));
+                        if (succ === 'failed' || (Number.isFinite(scaled) && psPre && scaled * 100 < parseInt(psPre[1]) - 0.5)) {
+                            scormVeto = true;
+                        } else if (succ === 'passed') {
+                            sendDebug('Quiz passed (cmi.success_status) - ignoring Take Again button.');
+                            passedQuizMsg = 'Quiz passed';
+                            return false;
+                        }
+                    }
+                } catch (e) {}
+
+                if (!scormVeto && (cText.includes('YOU PASSED') || cText.includes('CONGRATULATIONS') || cText.match(/\bPASSED\b/) || pageText.includes('YOU PASSED') || pageText.includes('CONGRATULATIONS'))) {
                     sendDebug('Quiz passed - ignoring Take Again button.');
                     passedQuizMsg = 'Quiz passed';
                     return false;
                 }
 
-                if (cText.includes('100%') || pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d]*100%/)) {
+                // Score digits must appear before the next '%' — otherwise a
+                // "Your score undefined%" line makes the regex skip ahead and
+                // capture the PASSING mark as the learner's score.
+                if (!scormVeto && (cText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d%]{0,30}100\s*%/) || pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d%]{0,30}100\s*%/))) {
                     sendDebug('Perfect score - ignoring Take Again button.');
                     passedQuizMsg = 'Quiz passed with 100%';
                     return false;
                 }
 
-                const ys = pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d]*(\d+)/);
-                const ps = pageText.match(/(?:PASSING|PASS MARK|PASSING SCORE|PASSING GRADE|TARGET)[^\d]*(\d+)/);
-                if (ys && ps && parseInt(ys[1]) >= parseInt(ps[1])) {
+                const ys = pageText.match(/(?:YOUR SCORE|YOU SCORED|SCORE:|SCORE\s*-)[^\d%]{0,30}(\d+)/);
+                const ps = psPre;
+                if (!scormVeto && ys && ps && parseInt(ys[1]) >= parseInt(ps[1])) {
                     sendDebug(`Score ${ys[1]} >= ${ps[1]} - ignoring Take Again button.`);
                     passedQuizMsg = `Quiz passed (score ${ys[1]} >= pass ${ps[1]})`;
                     return false;
@@ -2694,7 +2716,13 @@
     }
 
     const scormPatternParts = pattern =>
-        String(pattern).split('[,]').map(s => s.trim().replace(/^urn:scormdriver:/i, '')).filter(Boolean);
+        String(pattern).split('[,]').map(s => {
+            let p = s.trim().replace(/^urn:scormdriver:/i, '');
+            // scormdriver percent-encodes multi-word answers
+            // ("High%20THC%20Potency") — decode or the text match fails.
+            try { p = decodeURIComponent(p); } catch (e) {}
+            return p;
+        }).filter(Boolean);
 
     // MCQ: map each pattern part to an option index (1-based). Text-normalized,
     // so it survives option reshuffling between attempts.
