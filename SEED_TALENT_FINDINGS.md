@@ -309,7 +309,19 @@ Note: `navId` for elements without `data-block-id` embeds `docY`, so scroll drif
 
 A stall on a different course (Birchmount Gift Card, UTR 2811259 — "(Read and select each box to move on)") exposed the same double-fire defect on `label.block-list__option`: `simulateHumanClick` dispatches a `click` event **and** calls `el.click()` — on a `<label>` each triggers activation behavior on the inner checkbox, so the box toggles twice per attempt (net unchecked). The checked-skip guard then never fires; 15 retries exhaust into the locked-scroll loop. v9.19 clicks the inner `input` once (single native toggle; falls back to one `el.click()` when no input is present).
 
+*Correction (v9.20):* live package inspection later showed this course's checkbox block is the legacy `role=checkbox` hitarea variant with no `input`/`label` at all — the observed stall was an unhandled adapter, while the double-toggle fix remains correct for true input lists.
+
 Same version trims the deliberate human-pacing delays roughly in half (jitter preserved): forward-nav click 800–1300→350–650ms + window 2500→1500ms; interactive click 600–1000→250–500ms + window 1500→900ms; quiz feedback-advance 800–1400→400–700ms + 2500→1500ms; next-question 600–1300→350–700ms + 2000→1200ms; take-again retry 1000→500ms + 3500→2000ms; embed play-button 800→400ms + 4000→2000ms; pre-solve "reading" pause 1200–2400→500–1000ms + window 1500→800ms. Untouched: the 7s video attempt window and watchdog (playback is genuinely time-bound on anti-skip players) and AI retry backoff (rate-limit semantics). Remaining perceived slowness on video lessons is the ~2× clamped real-time playback, not delay code.
+
+### Legacy role=checkbox list variant + in-place section reveals (v9.20)
+
+Live inspection of the Birchmount Gift Card lesson (package `C0367`, lesson `eT-_U7OTGvOioVy4eUPpKerf3RpOUPt9` — recovered from the sniffer's frame URL, `scorm-launcher.html?courseUrl=...`) resolved the "froze after flipping cards" report and corrected the v9.19 diagnosis of the earlier checkbox stall:
+
+1. **Rise `.continue-btn` does not navigate — it reveals the next section in place.** Clicking it rendered 9→13 `data-block-id`s with the same `#/lessons/` hash, and the player auto-scrolled its inner `.page-wrap` scroller (`window.scrollY`/`document.body.scrollHeight` never move — the lesson scrolls inside a wrapper div). The button is then consumed and re-rendered as "Continued" text.
+2. **The real checkbox block was `block-list--checkboxes block-list--legacy`, not `block-list__option`.** It contains **zero `input`/`label` elements**: each item is `div.block-list__checkbox__hitarea[role="checkbox"][aria-checked]` — a styled hit-area div over `i.icon-checkmark-valid`. The earlier stall was therefore an *unhandled adapter* (selector never matched), not the double-toggle bug — though that bug is real for true `<input>` lists and the v9.19 fix stands. Verified live: one `el.click()` per hitarea flips `aria-checked` to `true`; all six checked → hint removed → `.continue-btn` enabled.
+3. **Why it looked frozen without scrolling:** `.continue-hint` (locked divider) is not in `fwdSelectors`, so Priority F's locked-scroll has no target; with no matching interactive the runner idles until the 15s incident. The user dumped inside that window.
+
+v9.20: adds `div.block-list__checkbox__hitarea[role="checkbox"]` to C1, skips `aria-checked="true"`, single-clicks it (the synthetic sequence would double-toggle it the same as a label), and gives each hitarea a per-index `intId` since they share block id + no text.
 
 ### Known solver limitations
 
