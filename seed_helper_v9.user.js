@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.27
+// @version      9.28
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -116,8 +116,7 @@
     // Sniffer state lives here (section 13 uses it) so it initializes before the panel can.
     let sniffOn = GM_getValue('seed_sniff', false);
     const sniffEntries = [];
-    // Bounded per-frame journals for sanitized incident reports.
-    const actionJournal = [];
+    // Bounded per-frame runtime error log for sanitized incident reports.
     const runtimeErrors = [];
     const idleIncidents = new Set();
 
@@ -126,10 +125,36 @@
         if (list.length > max) list.splice(0, list.length - max);
     }
 
+    // ── Cross-frame persisted journal + diag keys ────────────────
+    // Each frame owns one GM key (origin+pathname) holding its own entries —
+    // no read-modify-write races between frames. Merged at DUMP/DIAG time.
+    const frameKey = (location.origin + location.pathname).slice(0, 120);
+    const journalKey = 'seed_journal::' + frameKey;
+    const diagKey    = 'seed_diag::' + frameKey;
+    const frameJournal = (() => {
+        try { const a = JSON.parse(GM_getValue(journalKey, '[]')); return Array.isArray(a) ? a.slice(-150) : []; }
+        catch(e) { return []; }
+    })();
+    let lastDiagWrite = 0;
+
+    // Expire journal/diag keys whose newest entry is >7d old, once per load.
+    try {
+        for (const k of GM_listValues()) {
+            if (!/^seed_(journal|diag)::/.test(k)) continue;
+            try {
+                const v = JSON.parse(GM_getValue(k, 'null'));
+                const last = Array.isArray(v) ? v[v.length - 1] : v;
+                const at = last && Date.parse(last.at || '');
+                if (!at || (Date.now() - at) > 7 * 24 * 3600 * 1000) GM_deleteValue(k);
+            } catch(e) { try { GM_deleteValue(k); } catch(_) {} }
+        }
+    } catch(e) {}
+
     if (window === window.top) whenBodyReady(() => {
         const wrap = document.createElement('div');
         let courseTextAccumulator = new Set();
         let latestIncident = null;
+        const dbgLines = [];   // rolling last-N debug lines for the panel
         wrap.innerHTML = `
         <div id="seed-panel" style="position:fixed;bottom:20px;right:20px;z-index:999999;
              background:#1e1e2e;color:#cdd6f4;padding:14px 18px;border-radius:12px;
@@ -139,7 +164,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.27</span>
+            <span>🤖 Seed Helper v9.28</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -147,6 +172,7 @@
                 <button id="st-logs" style="background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📊 LOGS</button>
                 <button id="st-sniff" style="background:#313244;color:#89dceb;border:1px solid #89dceb;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Record network traffic (find the completion API)">📡 SNIFF</button>
                 <button id="st-dump" style="background:#313244;color:#94e2d5;border:1px solid #94e2d5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download captured requests as JSON">⬇ DUMP</button>
+                <button id="st-diag" style="background:#313244;color:#f5c2e7;border:1px solid #f5c2e7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download cross-frame state snapshot + action journal (no sniff needed)">⬇ DIAG</button>
                 <button id="st-incident" style="display:none;background:#313244;color:#fab387;border:1px solid #fab387;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download the latest sanitized stall report">⬇ INCIDENT</button>
                 <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped"></span>
             </div>
@@ -185,7 +211,7 @@
           </div>
 
           <div id="st-status" style="font-size:13px;color:#bac2de;line-height:1.4;">Stopped. Navigate to your course then click START.</div>
-          <div id="st-debug"  style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;"></div>
+          <div id="st-debug"  style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;white-space:pre-line;"></div>
 
           <div id="st-matches" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #45475a;">
             <div style="font-size:11px;font-weight:bold;color:#f9e2af;margin-bottom:6px;">💡 MATCHING ANSWERS:</div>
@@ -227,7 +253,7 @@
             broadcastState();
         }
 
-        startBtn.addEventListener('click',  () => { applyState('running'); updateStatus('Running...', '#a6e3a1'); });
+        startBtn.addEventListener('click',  () => { try { GM_setValue('seed_runid', String(Date.now())); } catch(e) {} applyState('running'); updateStatus('Running...', '#a6e3a1'); });
         pauseBtn.addEventListener('click',  () => applyState('paused'));
         resumeBtn.addEventListener('click', () => { applyState('running'); updateStatus('Resumed.', '#a6e3a1'); });
         stopBtn.addEventListener('click',   () => { applyState('stopped'); broadcastReset(); });
@@ -372,22 +398,40 @@
             });
             updateStatus(sniffOn ? 'Sniffing network traffic…' : 'Sniffer off.', '#89dceb');
         });
-        dumpBtn.addEventListener('click', () => {
-            const blob = new Blob([JSON.stringify(sniffEntries, null, 2)], { type: 'application/json' });
+        const downloadJson = (name, obj) => {
+            const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'seed_sniff_' + Date.now() + '.json';
+            a.download = name;
             a.click();
-            updateStatus('Dumped ' + sniffEntries.length + ' requests.', '#94e2d5');
-        });
+        };
+        // Ask every frame to snapshot its state into GM, wait briefly, then
+        // bundle network events + merged cross-frame journal + per-frame diags.
+        const collectAndDownload = (withEvents) => {
+            window.postMessage({ type: 'SEED_DIAG_REQ' }, '*');
+            document.querySelectorAll('iframe').forEach(f => {
+                try { f.contentWindow.postMessage({ type: 'SEED_DIAG_REQ' }, '*'); } catch(e2) {}
+            });
+            updateStatus('Collecting diagnostics…', '#94e2d5');
+            setTimeout(() => {
+                const journal = mergedJournal();
+                const diags = collectDiags();
+                const payload = {
+                    meta: { helperVersion: '9.28', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    events: withEvents ? sniffEntries : undefined,
+                    journal,
+                    diags
+                };
+                downloadJson('seed_' + (withEvents ? 'sniff' : 'diag') + '_' + Date.now() + '.json', payload);
+                updateStatus((withEvents ? 'Dumped ' + sniffEntries.length + ' requests + ' : 'Diag: ') + journal.length + ' journal entries, ' + Object.keys(diags).length + ' frames.', '#94e2d5');
+            }, 700);
+        };
+        dumpBtn.addEventListener('click', () => collectAndDownload(true));
+        document.getElementById('st-diag').addEventListener('click', () => collectAndDownload(false));
         incidentBtn.addEventListener('click', () => {
             if (!latestIncident) return;
             const safeType = String(latestIncident.type || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'unknown';
-            const blob = new Blob([JSON.stringify(latestIncident, null, 2)], { type: 'application/json' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'seed_incident_' + safeType + '_' + Date.now() + '.json';
-            a.click();
+            downloadJson('seed_incident_' + safeType + '_' + Date.now() + '.json', latestIncident);
         });
 
         window.addEventListener('message', (e) => {
@@ -399,7 +443,11 @@
             }
             if (e.data.type === 'SEED_DEBUG') {
                 const el = document.getElementById('st-debug');
-                if (el) el.innerText = e.data.text;
+                if (el) {
+                    dbgLines.push(String(e.data.text).slice(0, 200));
+                    if (dbgLines.length > 5) dbgLines.shift();
+                    el.innerText = dbgLines.join('\n');
+                }
             }
             if (e.data.type === 'SEED_MATCHES') {
                 const mp = document.getElementById('st-matches'), mt = document.getElementById('st-matches-text');
@@ -460,7 +508,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.27').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.28').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -591,15 +639,28 @@
     // =========================================================
     // 3. MESSAGING
     // =========================================================
+    // Filtered write-through: high-frequency noise (countdowns, sniff lines,
+    // repeated identical lines) stays out of both journals so real actions
+    // aren't evicted by chatter.
+    const JOURNAL_SKIP = /^(Delay \d|Waiting for AI|\[SNIFF\]|video \d)/;
+    function journalPush(kind, t) {
+        const text = scrubIncidentText(t, 160);
+        if (JOURNAL_SKIP.test(text)) return;
+        const last = frameJournal[frameJournal.length - 1];
+        if (last && last.text === text && last.kind === kind) return;
+        const entry = { at: new Date().toISOString(), kind, text };
+        pushBounded(frameJournal, entry, 150);
+        try { GM_setValue(journalKey, JSON.stringify(frameJournal)); } catch(e) {}
+    }
     function sendStatus(t, c, hm) {
-        pushBounded(actionJournal, { at: new Date().toISOString(), kind: 'status', text: scrubIncidentText(t, 160) });
+        journalPush('status', t);
         try { window.top.postMessage({ type: 'SEED_STATUS', text: t, color: c, hideMatches: !!hm }, '*'); } catch(e) {}
         try {
             GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/log", data: "[STATUS] " + t, headers: { "Content-Type": "text/plain" } });
         } catch(err) {}
     }
     function sendDebug(t) {
-        pushBounded(actionJournal, { at: new Date().toISOString(), kind: 'debug', text: scrubIncidentText(t, 160) });
+        journalPush('debug', t);
         try { window.top.postMessage({ type: 'SEED_DEBUG', text: String(t).slice(0, 200) }, '*'); } catch(e) {}
         console.log('[SH v9.0]', t);
         try {
@@ -872,7 +933,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.27',
+            helperVersion: '9.28',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -949,7 +1010,7 @@
                 incident.embeds.push({ src });
             }
         } catch (e) {}
-        incident.recentActions = actionJournal.slice(-30).map(a => ({
+        incident.recentActions = frameJournal.slice(-30).map(a => ({
             at: clipStr(a && a.at, 40),
             kind: clipStr(a && a.kind, 20),
             text: scrubIncidentText(a && a.text, 160)
@@ -962,7 +1023,84 @@
             line: er && er.line,
             column: er && er.column
         }));
+        try { incident.diag = buildDiag(); } catch (e) {}
         return incident;
+    }
+
+    // Point-in-time state snapshot — answers the usual first questions at a
+    // stall: which scroller is real, what's locked, what's still interactive,
+    // and whether the course model was reachable. Sanitized (no user data).
+    function buildDiag() {
+        const d = {
+            at: new Date().toISOString(),
+            url: sanitizeIncidentUrl(location.href),
+            title: clipStr(document.title, 80),
+            engine: detectCourseEngine(),
+            state: String(state),
+            isSolving: !!isSolving,
+            frame: clipStr(frameOriginPath(), 200)
+        };
+        try {
+            d.scrollers = Array.from(document.querySelectorAll('.page-wrap, .page__wrapper, .lesson-main'))
+                .map(s => ({ cls: clipStr(s.className, 60), h: s.scrollHeight, ch: s.clientHeight, top: Math.round(s.scrollTop) }))
+                .filter(s => s.h > s.ch + 10).slice(0, 6);
+        } catch (e) {}
+        try {
+            d.interactives = {
+                checkboxChecked: document.querySelectorAll('.block-list [role="checkbox"][aria-checked="true"]').length,
+                checkboxUnchecked: document.querySelectorAll('.block-list [role="checkbox"][aria-checked="false"]').length,
+                accordionOpen: document.querySelectorAll('button.blocks-accordion__header[aria-expanded="true"]').length,
+                accordionClosed: document.querySelectorAll('button.blocks-accordion__header[aria-expanded="false"]').length,
+                videos: document.querySelectorAll('video').length
+            };
+        } catch (e) {}
+        try {
+            const cb = document.querySelector('button.continue-btn');
+            d.continueBtn = cb ? { disabled: !!cb.disabled, text: clipStr(cb.innerText, 30) } : null;
+            d.lockHint = /complete the content above/i.test(document.body ? document.body.innerText : '');
+        } catch (e) {}
+        try {
+            const win = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+            d.courseModel = {
+                courseData: !!win.courseData,
+                fetchCourse: typeof win.__fetchCourse === 'function',
+                quizDefs: (() => { try { return quizDefs().length; } catch (_) { return -1; } })()
+            };
+        } catch (e) {}
+        try {
+            d.sweep = { armed: pageSweepArmed.size, done: pageSweepDone.size };
+        } catch (e) {}
+        return d;
+    }
+
+    // Merged timeline across all frames (each frame owns a GM key, tagged by
+    // frame origin+path) — survives navigation and answers "what did the
+    // script do" at any stall.
+    function mergedJournal() {
+        const out = [];
+        try {
+            for (const k of GM_listValues()) {
+                if (!k.startsWith('seed_journal::')) continue;
+                try {
+                    const arr = JSON.parse(GM_getValue(k, '[]'));
+                    const tag = k.slice(14).replace(/^https?:\/\//, '').slice(-70);
+                    if (Array.isArray(arr)) for (const e of arr) out.push({ f: tag, at: e.at, kind: e.kind, text: e.text });
+                } catch (e) {}
+            }
+        } catch (e) {}
+        out.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+        return out.slice(-400);
+    }
+
+    function collectDiags() {
+        const out = {};
+        try {
+            for (const k of GM_listValues()) {
+                if (!k.startsWith('seed_diag::')) continue;
+                try { out[k.slice(11).replace(/^https?:\/\//, '')] = JSON.parse(GM_getValue(k, '{}')); } catch (e) {}
+            }
+        } catch (e) {}
+        return out;
     }
 
     function isTerminalNavLabel(cleanText) {
@@ -1093,6 +1231,7 @@
     const interactedBlocks = {};
     const pageSweepArmed = new Set();
     const pageSweepDone  = new Set();
+    const answerSrc     = {};   // questionId -> 'courseData'|'history'|'scorm'|'ai'
     const watchedMedia  = new Set();
     const mediaRetries  = {};
     const takeAgainRetries = {};
@@ -1205,8 +1344,9 @@
             } else {
                 q.attempts.forEach((a, i) => {
                     const resClass = a.result === 'Correct' ? 'correct' : 'incorrect';
+                    const srcBadge = a.src ? ` <span style="color:#b4befe;font-size:11px;font-weight:bold;">[${a.src}]</span>` : '';
                     card += `<div class="guess">
-                        <b>Attempt ${i+1}</b> - <span class="${resClass}">${a.result}</span> <span style="color:#a6adc8;font-size:12px;">(${new Date(a.time).toLocaleTimeString()})</span><br>
+                        <b>Attempt ${i+1}</b> - <span class="${resClass}">${a.result}</span>${srcBadge} <span style="color:#a6adc8;font-size:12px;">(${new Date(a.time).toLocaleTimeString()})</span><br>
                         ${a.guess}
                     </div>`;
                 });
@@ -1434,6 +1574,12 @@
         if (!isRunning()) return;
 
         const now = Date.now();
+        // Refresh this frame's diag snapshot ~every 20s so a later DUMP/DIAG
+        // always has near-current state even if frames die mid-broadcast.
+        if (now - lastDiagWrite > 20000) {
+            lastDiagWrite = now;
+            try { GM_setValue(diagKey, JSON.stringify(buildDiag())); } catch(e) {}
+        }
         if (now < nextActionTime) {
             stuckSince = 0;
             sendDebug(isSolving ? 'Waiting for AI...' : `Delay ${Math.round((nextActionTime - now) / 1000)}s`);
@@ -1511,6 +1657,7 @@
                             history[currentQId].attempts.push({
                                     guess: guessStr,
                                     result: result,
+                                    src: answerSrc[currentQId] || undefined,
                                     revealedCorrect: revealedCorrect, // log if found
                                     time: new Date().toISOString()
                                 });
@@ -1738,6 +1885,7 @@
                         history[qId].attempts.push({
                             guess: guessStr,
                             result: 'Incorrect (Blind Fail)',
+                            src: answerSrc[qId] || undefined,
                             time: new Date().toISOString()
                         });
                     }
@@ -2318,6 +2466,7 @@
         if (cdNums) {
             sendDebug('Course-data answer hit: ' + cdNums.join(', '));
             sendStatus('Applying recorded correct answer...', '#a6e3a1');
+            answerSrc[questionId] = 'courseData';
             applyNums(cdNums);
             return;
         }
@@ -2342,6 +2491,7 @@
                 }
                 if (cachedNums.length > 0) {
                     sendDebug('CACHE HIT: ' + cachedNums.join(', '));
+                    answerSrc[questionId] = 'history';
                     applyNums(cachedNums);
                     return;
                 }
@@ -2353,12 +2503,14 @@
         if (scormNums) {
             sendDebug('SCORM correct-response hit: ' + scormNums.join(', '));
             sendStatus('Applying recorded correct answer...', '#a6e3a1');
+            answerSrc[questionId] = 'scorm';
             applyNums(scormNums);
             return;
         }
 
         callOpenRouter(sysMsg, userMsg, 0, (aiText) => {
             sendDebug('AI: "' + aiText.slice(0, 80) + '"');
+            answerSrc[questionId] = 'ai';
             let nums = parseNumbers(aiText, optionLabels.length);
             if (!isMulti && nums.length > 1) {
                 sendDebug(`Single-select: AI gave ${nums.length}, capping to 1 (${nums[0]})`);
@@ -2452,6 +2604,7 @@
             }
             if (cachedAnswer) {
                 sendDebug('CACHE HIT: "' + cachedAnswer + '"');
+                answerSrc[questionId] = 'history';
                 await applyAnswer(cachedAnswer);
                 return;
             }
@@ -2462,6 +2615,7 @@
         if (scormAns) {
             sendDebug('SCORM correct-response hit.');
             sendStatus('Applying recorded correct answer...', '#a6e3a1');
+            answerSrc[questionId] = 'scorm';
             await applyAnswer(scormAns);
             return;
         }
@@ -2469,6 +2623,7 @@
         callOpenRouter(sysMsg, userMsg, 0, async (aiText) => {
             const answer = aiText.trim();
             sendDebug('AI: "' + answer + '"');
+            answerSrc[questionId] = 'ai';
             await applyAnswer(answer);
         });
     }
@@ -2600,10 +2755,12 @@
         if (scormPairs) {
             sendDebug('SCORM correct-response hit: ' + scormPairs.length + ' pairs');
             sendStatus('Applying recorded correct matches...', '#a6e3a1');
+            answerSrc[questionId] = 'scorm';
             applyAiText(scormPairs.map(p => `L${p.l},R${p.r}`).join('\n'));
             return;
         }
 
+        answerSrc[questionId] = 'ai';
         callOpenRouter(
             'You solve matching quizzes. Output ONLY pairs as L#,R# one per line. No words, no explanations.',
             userMsg,
@@ -3070,6 +3227,13 @@
             // Forward deeper so nested iframes get the toggle too
             document.querySelectorAll('iframe').forEach(f => {
                 try { f.contentWindow.postMessage({ type: 'SEED_SNIFF_SET', on: sniffOn }, '*'); } catch(_) {}
+            });
+        }
+        if (e.data.type === 'SEED_DIAG_REQ') {
+            try { GM_setValue(diagKey, JSON.stringify(buildDiag())); } catch(_) {}
+            // Relay deeper so nested frames also snapshot
+            document.querySelectorAll('iframe').forEach(f => {
+                try { f.contentWindow.postMessage({ type: 'SEED_DIAG_REQ' }, '*'); } catch(_) {}
             });
         }
         if (e.data.type === 'SEED_SNIFF_ENTRY' && sniffOn) {

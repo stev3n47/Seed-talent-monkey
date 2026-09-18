@@ -405,6 +405,18 @@ SNIFF `1789757768410` + live reproduction on package `C1012/1712676689937` ("Min
 - **`window.courseData` absent on this build** — the course model loads via `window.__fetchCourse(locale)` → `locales/{name}.js` JSONP → `deserialize()`. `quizDefs()` now fires `__fetchCourse()` once when no `courseData` raw string exists; the same `walk()` finds defs in either model shape (C1012's 5-question MC quiz resolves all 5 defs). Fetch is async, so it is warmed at script start — first question may still fall through if it lands before resolution.
 - **suspend_data v2 is obfuscated**: `{"v":2,"d":[...numbers...],"cpv":"..."}` — `d` is a shifted char-code array (not plain ASCII, not simple ±index). Block-level progress could not be decoded; treated read-only.
 
+### Diagnostics overhaul — journal persistence, state snapshots, answer-source tracking (v9.28)
+
+Purely additive diagnostics (no runner-logic changes):
+
+- **Cross-frame persisted journal**: each frame owns a GM key `seed_journal::<origin+pathname>` holding its last 150 actions (status+debug, noise-filtered — countdowns/sniff-heartbeats/video heartbeats and consecutive dupes excluded). Survives navigation/reloads; keys expire after 7d. `mergedJournal()` merges all frame keys into one timestamped timeline tagged per frame — answers 'what did the script do' at any stall without reconstructing from network side-effects.
+- **`buildDiag()` state snapshot**: engine, url, scrollable scrollers (class/heights/scrollTop), interactive inventory (checkbox checked/unchecked, accordion open/closed, videos), continue-btn state, lock-hint presence, course-model reachability (`courseData` global / `__fetchCourse` / resolved def count), sweep state, isSolving. Embedded automatically in every incident; also refreshed to `seed_diag::<frame>` every ~20s while running and on demand.
+- **DIAG button**: broadcasts `SEED_DIAG_REQ` (relayed down the frame tree like SNIFF_SET), waits 700ms, downloads `{meta, journal, diags}` — state capture with no sniffer needed.
+- **Enriched DUMP**: same bundle plus `events` (the sniff array, capped 2000). Filename stays `seed_sniff_*`; the `events` key keeps old parse tooling working.
+- **Answer-source field**: `answerSrc[qid]` set at each solver decision point (courseData/history/scorm/ai) and written into each history attempt as `src` — the LOGS window shows a `[source]` badge per attempt, and dumps answer 'did the deterministic path actually fire' definitively.
+- **runId**: START stamps `seed_runid`; included in dump/diag meta so multiple files correlate to one session.
+- Panel debug line now shows the last 5 messages (rolling) instead of only the most recent.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
