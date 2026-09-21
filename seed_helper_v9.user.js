@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.31
+// @version      9.32
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.31</span>
+            <span>🤖 Seed Helper v9.32</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,7 +419,7 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.31', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.32', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
@@ -510,7 +510,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.31').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.32').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -935,7 +935,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.31',
+            helperVersion: '9.32',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1244,6 +1244,7 @@
     let stuckSince = 0;
     let activeSolveQId = null;   // question currently being solved by the AI
     const quizSolveFails = {};   // per-question AI-failure count (max 3 retries)
+    const errorReleased = new Set(); // qids released via submission error — re-click selections, DOM state is untrusted
     let passedQuizMsg = '';      // set when a results screen shows a passing score
     let quizPassedReported = false;
 
@@ -1745,9 +1746,19 @@
                     if (!titleEl) titleEl = activeCard.querySelector('h1, h2, h3, h4, legend');
                     const errQId = titleEl ? (titleEl.innerText || titleEl.textContent).trim() : '';
                     if (errQId && attempted.has(errQId)) {
-                        sendDebug('Submission error detected. Clearing attempted state for retry...');
-                        attempted.delete(errQId);
-                        // Briefly pause to prevent tight looping if click repeatedly fails
+                        const n = (quizSolveFails[errQId] || 0) + 1;
+                        quizSolveFails[errQId] = n;
+                        if (n <= 4) {
+                            // Mark for force-reclick: the error proves Rise never
+                            // registered the selection, so DOM "checked" is a lie.
+                            errorReleased.add(errQId);
+                            attempted.delete(errQId);
+                            sendDebug(`Submission error detected. Clearing attempted state for retry (${n}/4)...`);
+                        } else if (n === 5) {
+                            // Past the bound: leave it attempted so the card keeps
+                            // skipping; the idle watchdog reports the stall.
+                            sendDebug(`Submission error persists for ${errQId.substring(0, 20)} — not releasing again.`);
+                        }
                         nextActionTime = now + 3000;
                         return;
                     }
@@ -2436,6 +2447,14 @@
 
                         (async () => {
                             try {
+                                // One-shot flag from the A1 submission-error release: the error
+                                // proves Rise never registered the click, so a "selected" DOM
+                                // state is drifted and must be re-clicked, not trusted.
+                                const forceReselect = errorReleased.has(questionId);
+                                if (forceReselect) {
+                                    errorReleased.delete(questionId);
+                                    sendDebug('Re-solving after submission error — forcing re-click of picked options');
+                                }
                                 // Iterate ALL options: check ones AI picked, uncheck ones AI did not pick
                                 for (let i = 0; i < optionLabels.length; i++) {
                                     const el = optionLabels[i];
@@ -2446,7 +2465,15 @@
 
                                     sendDebug(`Option ${num}: shouldBeSelected=${shouldBeSelected}, currentlySelected=${currentlySelected}`);
 
-                                    if (shouldBeSelected && !currentlySelected) {
+                                    if (shouldBeSelected && (forceReselect || !currentlySelected)) {
+                                        if (currentlySelected) {
+                                            // Drifted state: DOM shows checked but Rise's model
+                                            // says unanswered. Silently reset so the click
+                                            // toggles ON and the change event reports true.
+                                            const drifted = el.querySelector('input');
+                                            if (drifted && drifted.checked) drifted.checked = false;
+                                            sendDebug(`Option ${num}: stale selected state — resetting before re-click`);
+                                        }
                                         el.style.outline = '2px solid #a6e3a1';
 
                                         const target = clickTargetFor(el);
@@ -3168,9 +3195,13 @@
             if (!o || typeof o !== 'object') return;
             if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length))) {
                 _quizDefs.push(o);
-            } else if (o.title && Array.isArray(o.pairs) && o.pairs.length) {
-                // Matching defs keep correct pairings in `pairs`, not answers/correct.
-                _quizDefs.push(o);
+            } else {
+                const titleish = o.title || o.prompt || o.question || o.stem;
+                if (titleish && ((Array.isArray(o.pairs) && o.pairs.length) || /match/i.test(String(o.type || '')))) {
+                    // Matching defs keep correct pairings outside answers/correct
+                    // (pairs[] or a matching-typed object — shape varies by build).
+                    _quizDefs.push(o);
+                }
             }
             for (const k in o) walk(o[k]);
         };
@@ -3273,24 +3304,30 @@
             return null;
         };
         for (const q of quizDefs()) {
-            const t = scormNormQuestion(htmlText(q.title || q.prompt || ''));
+            const t = scormNormQuestion(htmlText(q.title || q.prompt || q.question || q.stem || ''));
             if (!t || !(t === target || t.includes(target) || target.includes(t))) continue;
-            const pairs = [];
-            if (Array.isArray(q.pairs) && q.pairs.length) {
-                for (const p of q.pairs) {
-                    const l = sideText(p, ['left', 'source', 'prompt', 'term', 'question', 'a']);
-                    const r = sideText(p, ['right', 'target', 'response', 'match', 'answer', 'b']);
+            // The pair list may live under several keys depending on the build.
+            const pairArr = [q.pairs, q.matches, q.matchings, q.responses, q.items]
+                .find(a => Array.isArray(a) && a.length && typeof a[0] === 'object');
+            if (pairArr) {
+                const pairs = [];
+                for (const p of pairArr) {
+                    const l = sideText(p, ['left', 'source', 'prompt', 'term', 'question', 'a', 'first']);
+                    const r = sideText(p, ['right', 'target', 'response', 'match', 'answer', 'b', 'second']);
                     if (!l || !r) { sendDebug('matching-dd pair shape unknown: ' + Object.keys(p || {}).join(',')); return null; }
                     const li = termTexts.findIndex(x => scormNorm(x) === scormNorm(htmlText(l)));
                     const ri = descTexts.findIndex(x => scormNorm(x) === scormNorm(htmlText(r)));
                     if (li === -1 || ri === -1) return null;
                     pairs.push({ l: li + 1, r: ri + 1 });
                 }
-                return pairs.length ? pairs : null;
+                if (pairs.length) return pairs;
             }
             sendDebug('matching-dd def keys: ' + Object.keys(q).slice(0, 15).join(','));
             return null;
         }
+        // No title match — dump what defs exist so the next DIAG shows the shape.
+        sendDebug('matching-dd: no def matched "' + target.slice(0, 30) + '"; defs: '
+            + quizDefs().map(q => String(q.title || q.prompt || q.question || q.stem || '?').slice(0, 24)).join(' | ').slice(0, 300));
         return null;
     }
 

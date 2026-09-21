@@ -451,6 +451,17 @@ Same C3552 course, Q02/13 "Match each term to its most appropriate descriptor". 
 
 **Verification note:** the descriptor dropdowns could be native `<select>` or custom button+listbox — the solver handles both, but the exact widget is unverified against live DOM (Playwright profile was locked). If it stalls, the debug line `matching-dd: N terms, M descriptors, control=TAG` plus a DIAG will show which path ran.
 
+### Live results + MCQ drifted-selection loop (v9.32, DIAGs 1789997780628 / 1789997851267)
+
+**matching-dd worked** — `control=BUTTON` (custom dropdowns, not selects), terms/descriptors read cleanly, AI path applied and the quiz advanced. But courseData didn't fire: `quizDefs` stayed **12** — the `title`+`pairs` gate missed this def. No `def keys` log → no title-matched def found at all. SCORM path can't help on first attempts (needs a prior submitted `correct_responses`).
+
+**New stall: drifted checked-state loop.** "What is the primary…" (real MCQ): solver clicked `input.quiz-multiple-response-option__input` → browser set `checked` natively → **Rise's React state never saw it** → submit → "Please answer the question to continue". On every retry `input.checked` still read true → solver skipped the click → submit → error → release → loop. A1's release was working; the solve-side "already selected, skip" optimization trusted a checked state Rise disagreed with.
+
+**Fixes:**
+1. `errorReleased` set — A1 now marks released qids; `solveQuiz` treats `currentlySelected` as untrusted on that retry: for a drifted `input.checked=true` it **silently resets to false first**, then clicks — so the native toggle lands ON and the change event reports `true` to React (a naive re-click would toggle OFF and deselect).
+2. **A1 release is now bounded** (`quizSolveFails`, 4) — it previously deleted unconditionally; past the bound the question stays attempted and the idle watchdog reports instead of looping.
+3. Walker widened again: `title|prompt|question|stem` + `pairs[]` **or** `type` matching /match/i. `courseDataMatchingPairs` probes `pairs|matches|matchings|responses|items` and, when no def title-matches, dumps the collected def titles so the next DIAG reveals the real shape.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
