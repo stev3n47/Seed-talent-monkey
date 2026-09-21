@@ -462,6 +462,12 @@ Same C3552 course, Q02/13 "Match each term to its most appropriate descriptor". 
 2. **A1 release is now bounded** (`quizSolveFails`, 4) — it previously deleted unconditionally; past the bound the question stays attempted and the idle watchdog reports instead of looping.
 3. Walker widened again: `title|prompt|question|stem` + `pairs[]` **or** `type` matching /match/i. `courseDataMatchingPairs` probes `pairs|matches|matchings|responses|items` and, when no def title-matches, dumps the collected def titles so the next DIAG reveals the real shape.
 
+### Follow-up on the drifted-selection loop (v9.33, DIAGs 1789998630878 / 1789998656870)
+
+The v9.32 force-re-click fired correctly (`stale selected state — resetting before re-click` → re-clicked the input → submit → **error persisted anyway**), so clicks on `input.quiz-multiple-response-option__input` provably don't reach Rise's state. Structural suspect: every tick shows **two** SUBMIT detections (`MCQ Options=0` + `MCQ Options=4`) — Rise keeps the submitted card mounted. If the submit bar sits outside the card, `submitBtn.closest()` falls back to `.lesson-main` and title/options/submit can bind to **different cards** — the solver could be marking a stale card's options while the submitted card stays genuinely unanswered.
+
+**Fix:** `detectActiveQuiz` now binds `container` to `.quiz-card--active:not([inert])` (the same selector A1/A2 already use — its error text is what drives the release loop, so it provably exists on these pages). Submits belonging to a stale `quiz-card` are skipped; when no active card exists the old closest-chain applies. Also: when A1 hits its retry bound, it dumps the option markup + card classes into the journal once, so the next DIAG shows the real DOM instead of another guess.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
