@@ -574,6 +574,6 @@ The Knowledge Check passed cleanly (`cmi: completed/passed/1 — course done`) a
 
 ### Auto-capture pipeline (v9.42)
 
-Incidents/diags now auto-POST to the existing local listener (`127.0.0.1:8765`; 8765 already serves the local BTTF app so /log stays there`/log`): `storeIncident` → `POST /incident`, DIAG/DUMP buttons → `POST /diag|sniff`. New `capture_server.js` writes them into `captures/` and serves `GET /latest` (newest file per kind). Silent no-op when the listener isn't running — behavior unchanged otherwise.
+Incidents/diags now auto-POST to a local capture listener on `127.0.0.1:8766` (port 8765 already serves the local BTTF app, so the legacy `/log` POSTs stay there): `storeIncident` → `POST /incident`, DIAG/DUMP buttons → `POST /diag|sniff`. New `capture_server.js` writes them into `captures/` and serves `GET /latest` (newest file per kind). Silent no-op when the listener isn't running — behavior unchanged otherwise.
 
 **Workflow:** run `node capture_server.js` alongside the course → any stall lands in `captures/` automatically → "check the latest capture" instead of downloading + uploading files manually.
