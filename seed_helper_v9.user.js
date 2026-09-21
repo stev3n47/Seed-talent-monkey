@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.39
+// @version       9.40
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.39</span>
+            <span>🤖 Seed Helper v9.40</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,7 +419,7 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.33', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.40', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
@@ -1533,8 +1533,6 @@
 
         sendDebug(`detectActiveQuiz: Found submit button. Container=${container.tagName}. MCQ Options=${mcqLabels.length}`);
 
-        if (mcqLabels.length === 0) continue;
-
         // Step 3: find matching pieces using confirmed explicit column selectors
         const col1Btns = Array.from(container.querySelectorAll(
             'ul.matching-interaction-col-1 button.matching-interaction-piece, ' +
@@ -1552,6 +1550,19 @@
         const ddRows = Array.from(container.querySelectorAll('li.matching-item'))
             .filter(isOptionVisible)
             .filter(r => r.querySelector('select, [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="true"]'));
+
+        // quiz-match variant (C1256 knowledge-check): chevron term items drag
+        // onto descriptor cards. Droppable LIs are aria-hidden hit targets —
+        // isVisible would reject them. Rows off-viewport are still valid pair
+        // members (courseData needs all of them), so size is the only filter.
+        const qmRect = el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 5 && r.height > 5;
+        };
+        const qmDrag = Array.from(container.querySelectorAll('li.quiz-match__item--draggable')).filter(qmRect);
+        const qmDrop = Array.from(container.querySelectorAll('li.quiz-match__item--immobile.droppable')).filter(qmRect);
+
+        if (mcqLabels.length === 0 && col1Btns.length < 2 && col2Btns.length < 2 && ddRows.length < 2 && qmDrag.length < 2) continue;
 
         // Step 4: generate a stable quiz ID
         let titleEl = container.querySelector('.quiz-card__title, [class*="quiz-card__title"], .quiz-question__title, [class*="question-title"]');
@@ -1593,6 +1604,9 @@
         // Step 5: classify
         if (col1Btns.length >= 2 && col2Btns.length >= 2) {
             return { type: 'matching', submitBtn, id: qId, col1: col1Btns, col2: col2Btns };
+        }
+        if (qmDrag.length >= 2 && qmDrop.length >= 2) {
+            return { type: 'matching', submitBtn, id: qId, col1: qmDrag, col2: qmDrop };
         }
         if (ddRows.length >= 2) {
             return { type: 'matching-dd', submitBtn, id: qId, rows: ddRows };
@@ -2390,7 +2404,9 @@
         }
 
         // ── PRIORITY F: Locked Continue Button Scroll ───
-        if (!hasUnlockedFwd) {
+        // Yields while a solve is in flight — scrolling mid-solve drags the
+        // quiz card off-screen and invalidates drag-target rects.
+        if (!hasUnlockedFwd && !isSolving) {
             const lockedBtn = fwdCandidates.find(el => {
                 const locked = el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('locked') || el.classList.contains('continue-hint') || !!el.closest('.is-disabled, [disabled], .locked, [class*="locked"], [aria-disabled="true"]');
                 return locked && isVisible(el);
@@ -2914,8 +2930,30 @@
                 lastSolvedQuestion = questionId;
 
                 sendStatus(`Dragging ${pairs.length} pairs...`, '#89b4fa');
+                // The drop target must be in the viewport — pointer hit-tests
+                // resolve at viewport coords, so off-screen rows can't match.
+                const ensureVis = el => {
+                    const r = el.getBoundingClientRect();
+                    if (r.top >= 20 && r.bottom <= window.innerHeight - 20) return;
+                    const sc = scrollContainerFor(el);
+                    const dy = r.top - Math.max(60, (window.innerHeight - r.height) / 2);
+                    if (sc && sc !== document.documentElement) sc.scrollTop += dy;
+                    else window.scrollBy(0, dy);
+                };
                 for (const [, ls, rs] of pairs) {
-                    const L = col1[+ls - 1], R = col2[+rs - 1];
+                    let L = col1[+ls - 1], R = col2[+rs - 1];
+                    // quiz-match remounts/re-sorts items after each drop — held
+                    // refs detach. Re-resolve by text whenever the node is stale.
+                    if (L && L.className && L.className.includes('quiz-match__item')) {
+                        const cand = Array.from(document.querySelectorAll('li.quiz-match__item--draggable'))
+                            .find(el => scormNorm(getPieceText(el)) === scormNorm(col1Texts[+ls - 1] || ''));
+                        if (cand) L = cand;
+                    } else if (L && !L.isConnected) L = null;
+                    if (R && R.className && R.className.includes('quiz-match__item')) {
+                        const cand = Array.from(document.querySelectorAll('li.quiz-match__item--immobile.droppable'))
+                            .find(el => scormNorm(getPieceText(el)) === scormNorm(col2Texts[+rs - 1] || ''));
+                        if (cand) R = cand;
+                    } else if (R && !R.isConnected) R = null;
                     if (!L || !R) continue;
 
                     // Skip drag if this exact pair is already correctly matched
@@ -2926,8 +2964,52 @@
                         continue;
                     }
 
+                    ensureVis(R); // synthetic pointerdown hits L off-screen anyway
                     await simulateDrag(L, R);
                     await sleep(450 + Math.random() * 400);
+
+                    // quiz-match marks a landed drop with --matched on the li.
+                    // A missed drop wedges the card: submit stays disabled and
+                    // the partial state still counts as "committed". Verify each
+                    // pair landed; re-resolve stale refs and retry once if not.
+                    if (L.className && String(L.className).includes('quiz-match__item')) {
+                        const cur = Array.from(document.querySelectorAll('li.quiz-match__item--draggable'))
+                            .find(el => scormNorm(getPieceText(el)) === scormNorm(col1Texts[+ls - 1] || ''));
+                        if (!(cur && String(cur.className).includes('matched'))) {
+                            sendDebug('matching: L' + ls + ' → R' + rs + ' did not land — retrying');
+                            const L2 = cur || L;
+                            const R2 = Array.from(document.querySelectorAll('li.quiz-match__item--immobile.droppable'))
+                                .find(el => scormNorm(getPieceText(el)) === scormNorm(col2Texts[+rs - 1] || '')) || R;
+                            if (L2 && R2) { ensureVis(R2); await simulateDrag(L2, R2); await sleep(600); }
+                        }
+                    }
+                }
+
+                // Final pass for quiz-match: any pair still unmatched after the
+                // retries gets one last drag before we give up honestly.
+                if (col1[0] && String(col1[0].className).includes('quiz-match__item')) {
+                    let stuck = 0;
+                    for (const [, ls, rs] of pairs) {
+                        const cur = Array.from(document.querySelectorAll('li.quiz-match__item--draggable'))
+                            .find(el => scormNorm(getPieceText(el)) === scormNorm(col1Texts[+ls - 1] || ''));
+                        if (cur && !String(cur.className).includes('matched')) {
+                            const R2 = Array.from(document.querySelectorAll('li.quiz-match__item--immobile.droppable'))
+                                .find(el => scormNorm(getPieceText(el)) === scormNorm(col2Texts[+rs - 1] || ''));
+                            if (R2) { ensureVis(R2); await simulateDrag(cur, R2); await sleep(600); }
+                        }
+                    }
+                    for (const [, ls] of pairs) {
+                        const cur = Array.from(document.querySelectorAll('li.quiz-match__item--draggable'))
+                            .find(el => scormNorm(getPieceText(el)) === scormNorm(col1Texts[+ls - 1] || ''));
+                        if (!(cur && String(cur.className).includes('matched'))) stuck++;
+                    }
+                    if (stuck) {
+                        // 5/6-style wedge: submit stays disabled and a partially
+                        // matched card counts as "committed" — it can never be
+                        // re-solved. Release so the idle watchdog reports it.
+                        releaseFailedQuestion('matching: ' + stuck + ' quiz-match item(s) would not land.', questionId);
+                        return;
+                    }
                 }
 
                 sendStatus('Matched! Submitting...', '#a6e3a1');
@@ -2935,6 +3017,17 @@
                 if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
                 isSolving = false;
         };
+
+        // courseData — MATCHING defs pair answers[].title (term) → matchTitle
+        // (descriptor). Deterministic, no AI needed (C1256 confirmed shape).
+        const cdPairs = courseDataMatchingPairs(questionId, col1Texts, col2Texts);
+        if (cdPairs) {
+            sendDebug('matching: courseData pairs resolved (' + cdPairs.length + ')');
+            sendStatus('Applying course-data matches...', '#a6e3a1');
+            answerSrc[questionId] = 'courseData';
+            applyAiText(cdPairs.map(p => `L${p.l},R${p.r}`).join('\n'));
+            return;
+        }
 
         // A prior submit already recorded the driver-verified correct pairs.
         const scormPairs = scormMatchingPairs(questionId, col1Texts, col2Texts);
