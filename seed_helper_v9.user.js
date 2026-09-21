@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.33
+// @version      9.34
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.33</span>
+            <span>🤖 Seed Helper v9.34</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1555,7 +1555,8 @@
             // release it for a bounded re-solve instead of skipping forever.
             const committed = container.querySelector(
                 'input:checked, [aria-checked="true"], [aria-pressed="true"], ' +
-                '[class*="--selected"], [class*="is-selected"], [class*="matched"], [class*="dropped"]'
+                '[class*="--selected"], [class*="is-selected"], [class*="matched"], [class*="dropped"], ' +
+                '[data-select-item="current"]:not([data-value=""])' // filled matching-dd row
             ) || Array.from(container.querySelectorAll(
                 '.quiz-card__feedback-label, [class*="quiz-card__feedback"]'
             )).some(el => isVisible(el))
@@ -2473,63 +2474,48 @@
                                     errorReleased.delete(questionId);
                                     sendDebug('Re-solving after submission error — forcing re-click of picked options');
                                 }
+
+                                // Rise options are <label>-wrapped inputs: a click anywhere
+                                // inside the label forwards to the input, so clicking input +
+                                // label + text-div toggles checkboxes an even number of times
+                                // (net unchanged) while React's state stays unsynced. Radios
+                                // survived this because they can't un-toggle — checkboxes did
+                                // not ("Please answer" loop, DIAG 1789998656870). Click ONCE,
+                                // verify, escalate to the wrapper, then the setter fallback.
+                                const setOptState = async (el, want, num) => {
+                                    const cur = isChecked(el);
+                                    sendDebug(`Option ${num}: shouldBeSelected=${want}, currentlySelected=${cur}`);
+                                    if (cur === want && !(forceReselect && want)) return;
+                                    el.style.outline = want ? '2px solid #a6e3a1' : '2px solid #f38ba8';
+                                    if (cur && want) {
+                                        // Drifted: DOM checked but Rise unaware — silent reset
+                                        // so the click toggles ON and reports true to React.
+                                        const drifted = el.querySelector('input');
+                                        if (drifted && drifted.checked) drifted.checked = false;
+                                        sendDebug(`Option ${num}: stale selected state — resetting before re-click`);
+                                    }
+                                    for (const t of [...new Set([clickTargetFor(el), el])]) {
+                                        simulateHumanClick(t);
+                                        await sleep(450 + Math.random() * 300);
+                                        if (isChecked(el) === want) break;
+                                    }
+                                    if (isChecked(el) !== want) {
+                                        const input = el.querySelector('input');
+                                        if (input && input.checked !== want) {
+                                            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'checked').set;
+                                            if (setter) setter.call(input, want);
+                                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }
+                                    }
+                                };
+
                                 // Iterate ALL options: check ones AI picked, uncheck ones AI did not pick
                                 for (let i = 0; i < optionLabels.length; i++) {
                                     const el = optionLabels[i];
                                     if (!el) continue;
-                                    const num = i + 1;
-                                    const shouldBeSelected = nums.includes(num);
-                                    const currentlySelected = isChecked(el);
-
-                                    sendDebug(`Option ${num}: shouldBeSelected=${shouldBeSelected}, currentlySelected=${currentlySelected}`);
-
-                                    if (shouldBeSelected && (forceReselect || !currentlySelected)) {
-                                        if (currentlySelected) {
-                                            // Drifted state: DOM shows checked but Rise's model
-                                            // says unanswered. Silently reset so the click
-                                            // toggles ON and the change event reports true.
-                                            const drifted = el.querySelector('input');
-                                            if (drifted && drifted.checked) drifted.checked = false;
-                                            sendDebug(`Option ${num}: stale selected state — resetting before re-click`);
-                                        }
-                                        el.style.outline = '2px solid #a6e3a1';
-
-                                        const target = clickTargetFor(el);
-                                        simulateHumanClick(target);
-                                        if (target !== el) simulateHumanClick(el);
-                                        const textEl = el.querySelector('[class*="__text"]');
-                                        if (textEl) simulateHumanClick(textEl);
-
-                                        // Fallback
-                                        const input = el.querySelector('input');
-                                        if (input && !input.checked) {
-                                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked").set;
-                                            if (nativeInputValueSetter) nativeInputValueSetter.call(input, true);
-                                            input.dispatchEvent(new Event('input', { bubbles: true }));
-                                            input.dispatchEvent(new Event('change', { bubbles: true }));
-                                        }
-
-                                        await sleep(700 + Math.random() * 500);
-                                    } else if (!shouldBeSelected && currentlySelected) {
-                                        el.style.outline = '2px solid #f38ba8';
-
-                                        const target = clickTargetFor(el);
-                                        simulateHumanClick(target);
-                                        if (target !== el) simulateHumanClick(el);
-                                        const textEl = el.querySelector('[class*="__text"]');
-                                        if (textEl) simulateHumanClick(textEl);
-
-                                        // Fallback
-                                        const input = el.querySelector('input');
-                                        if (input && input.checked) {
-                                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked").set;
-                                            if (nativeInputValueSetter) nativeInputValueSetter.call(input, false);
-                                            input.dispatchEvent(new Event('input', { bubbles: true }));
-                                            input.dispatchEvent(new Event('change', { bubbles: true }));
-                                        }
-
-                                        await sleep(600 + Math.random() * 400);
-                                    }
+                                    await setOptState(el, nums.includes(i + 1), i + 1);
+                                    await sleep(250 + Math.random() * 250);
                                 }
 
                                 if (AUTO_SUBMIT_QUIZ) {
@@ -2856,60 +2842,31 @@
 
 
     // =========================================================
-    // 10b. DROPDOWN-MATCHING SOLVER (li.matching-item rows)
-    // Each row = term + <select> or popup-listbox trigger. Answers come from
-    // courseData pairs → SCORM prior interactions → AI, then are committed by
-    // setting the select value or clicking the matching menu option.
+    // 10b. DROPDOWN-MATCHING SOLVER — verified against live C3552 DOM.
+    // Rows are li.matching-item-immobile: each shows a descriptor and a
+    // combobox trigger (button[data-select-trigger], aria-haspopup=listbox).
+    // The opened listbox (aria-owns → [data-select-content]) offers the
+    // movable TERM list as options: [data-select-item] role=option with
+    // data-value = 0-based index into li.matching-item-movable. So each row
+    // answers "which term goes with this descriptor".
+    // Answer contract for all sources: {l = term index, r = descriptor row index}, 1-based.
     // =========================================================
     async function solveMatchingDropdown(questionId, rows, submitBtn) {
         isSolving = true;
         sendStatus('Analysing dropdown matching...', '#f9e2af');
 
-        const controlOf = row => row.querySelector('select')
-            || row.querySelector('[role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="true"], button');
-
-        const termOf = row => {
-            const cand = row.querySelector('[class*="matching-item__term"], [class*="term"], [class*="matching-item__content"]');
-            if (cand && (cand.innerText || '').trim()) return cand.innerText.trim();
-            const clone = row.cloneNode(true);
-            clone.querySelectorAll('select, [role="combobox"], [aria-haspopup], button, [class*="visually-hidden"], script, style').forEach(n => n.remove());
-            return (clone.innerText || clone.textContent || '')
-                .replace(/Selectable item/gi, '').replace(/^\s*(?:\d+\s*[).:\-]?\s*)+/, '').replace(/\s+/g, ' ').trim();
+        const card = (rows[0] && rows[0].closest('.quiz-card, [class*="quiz-card"], .quiz-item__card, .quiz-question')) || document;
+        const itemText = el => {
+            const t = el.querySelector('.matching-item__text, [data-match-content]');
+            return String((t ? t.innerText : el.innerText) || '').replace(/Selectable item/gi, '').replace(/\s+/g, ' ').trim();
         };
+        const movables = Array.from(card.querySelectorAll('li.matching-item-movable'));
+        const termTexts = movables.map(itemText);   // option pool (numbered)
+        const descTexts = rows.map(itemText);       // descriptor per row
+        sendDebug(`matching-dd: ${rows.length} descriptor rows, ${termTexts.length} terms (${termTexts.map(t=>t.slice(0,15)).join('|')})`);
 
-        // Descriptor pool: union of every row's option texts. Native selects
-        // are read directly; a custom trigger is opened once to read its menu.
-        const descPool = [];
-        const poolOpts = sel => Array.from(sel.options).filter(o => {
-            const t = (o.textContent || '').trim();
-            return t && !o.disabled && !/^\s*(select|choose|pick|—|-)\s*$/i.test(t);
-        });
-        for (const row of rows) {
-            const sel = row.querySelector('select');
-            if (!sel) continue;
-            for (const o of poolOpts(sel)) {
-                const t = o.textContent.trim();
-                if (!descPool.includes(t)) descPool.push(t);
-            }
-        }
-        if (!descPool.length) {
-            const trig = controlOf(rows[0]);
-            if (trig && trig.tagName !== 'SELECT') {
-                simulateHumanClick(trig);
-                await sleep(400);
-                Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, [role="menuitemradio"], [role="menuitem"]'))
-                    .filter(o => isVisible(o))
-                    .forEach(o => { const t = (o.innerText || '').trim(); if (t && !descPool.includes(t)) descPool.push(t); });
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-                simulateHumanClick(trig); // close if Escape didn't
-                await sleep(300);
-            }
-        }
-
-        const termTexts = rows.map(termOf);
-        sendDebug(`matching-dd: ${termTexts.length} terms, ${descPool.length} descriptors, control=${controlOf(rows[0]) ? controlOf(rows[0]).tagName : 'none'}`);
-        if (!termTexts.length || !descPool.length) {
-            releaseFailedQuestion('Could not read dropdown-matching rows/options.', questionId);
+        if (!rows.length || !termTexts.length) {
+            releaseFailedQuestion('Could not read dropdown-matching rows/terms.', questionId);
             return;
         }
 
@@ -2920,41 +2877,49 @@
             return i;
         };
 
-        const setRowValue = async (row, descText) => {
+        // Sets one descriptor row to a movable term index (0-based).
+        const setRowValue = async (row, termText) => {
+            const mi = pickIdx(termTexts, termText);
+            if (mi === -1) return false;
             const sel = row.querySelector('select');
             if (sel) {
-                const opts = poolOpts(sel);
-                const idx = pickIdx(opts.map(o => o.textContent.trim()), descText);
-                if (idx === -1) return false;
-                sel.value = opts[idx].value;
+                // Generic native-select fallback (not seen in Rise, cheap to keep)
+                const opt = Array.from(sel.options).find(o => scormNorm(o.textContent) === scormNorm(termText)
+                    || o.value === String(mi) || o.textContent.trim() === String(mi + 1));
+                if (!opt) return false;
+                sel.value = opt.value;
                 sel.dispatchEvent(new Event('input', { bubbles: true }));
                 sel.dispatchEvent(new Event('change', { bubbles: true }));
                 return true;
             }
-            const trig = controlOf(row);
+            const trig = row.querySelector('[data-select-trigger], [role="combobox"], button[aria-haspopup]');
             if (!trig) return false;
             simulateHumanClick(trig);
             await sleep(350);
-            const opts = Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, [role="menuitemradio"], [role="menuitem"]'))
-                .filter(o => isVisible(o));
-            const idx = pickIdx(opts.map(o => (o.innerText || '').trim()), descText);
-            if (idx === -1) {
+            const owns = trig.getAttribute('aria-owns') || trig.getAttribute('aria-controls');
+            const lb = (owns && document.getElementById(owns)) || row.querySelector('[role="listbox"], [data-select-content]');
+            const opts = lb ? Array.from(lb.querySelectorAll('[role="option"], [data-select-item]')) : [];
+            const opt = opts.find(o => o.getAttribute('data-value') === String(mi))
+                || opts.find(o => (o.getAttribute('aria-labelledby') || '').includes('movable-' + (mi + 1)))
+                || opts.find(o => (o.innerText || '').trim() === String(mi + 1));
+            if (!opt) {
                 document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
                 await sleep(250);
                 return false;
             }
-            simulateHumanClick(opts[idx]);
+            simulateHumanClick(opt);
             await sleep(300);
             return true;
         };
 
+        // pairs: {l = 1-based term index (movable), r = 1-based descriptor row}
         const applyPairs = async (pairs) => {
-            const labelLines = pairs.map(p => `${termTexts[p.l - 1] || '?'} ➔ ${descPool[p.r - 1] || '?'}`);
+            const labelLines = pairs.map(p => `${termTexts[p.l - 1] || '?'} ➔ ${descTexts[p.r - 1] || '?'}`);
             const history = loadHistory();
             if (!history[questionId]) {
                 history[questionId] = {
                     type: 'matching-dd', course: getCourseName(),
-                    left: termTexts, right: descPool, attempts: []
+                    left: termTexts, right: descTexts, attempts: []
                 };
                 saveHistory(history);
             }
@@ -2965,8 +2930,8 @@
             sendStatus(`Setting ${pairs.length} dropdown matches...`, '#89b4fa');
             let failed = 0;
             for (const p of pairs) {
-                const ok = await setRowValue(rows[p.l - 1], descPool[p.r - 1]);
-                if (!ok) { failed++; sendDebug(`matching-dd: failed to set row ${p.l} → "${(descPool[p.r - 1] || '').slice(0, 40)}"`); }
+                const ok = await setRowValue(rows[p.r - 1], termTexts[p.l - 1]);
+                if (!ok) { failed++; sendDebug(`matching-dd: failed to set "${(descTexts[p.r - 1] || '').slice(0, 35)}" → "${(termTexts[p.l - 1] || '').slice(0, 35)}"`); }
                 await sleep(350 + Math.random() * 350);
             }
             if (failed) {
@@ -2982,8 +2947,8 @@
             isSolving = false;
         };
 
-        // 1) courseData — deterministic answer key
-        const cdPairs = courseDataMatchingPairs(questionId, termTexts, descPool);
+        // 1) courseData — answers[] items pair title (term) → matchTitle (descriptor)
+        const cdPairs = courseDataMatchingPairs(questionId, termTexts, descTexts);
         if (cdPairs && cdPairs.length) {
             sendDebug('matching-dd: courseData pairs resolved (' + cdPairs.length + ')');
             sendStatus('Applying course matches...', '#a6e3a1');
@@ -2992,8 +2957,8 @@
             return;
         }
 
-        // 2) SCORM prior-correct responses (same src[.]dst pattern as drag matching)
-        const scormPairs = scormMatchingPairs(questionId, termTexts, descPool);
+        // 2) SCORM prior-correct responses (src[.]dst = term→descriptor)
+        const scormPairs = scormMatchingPairs(questionId, termTexts, descTexts);
         if (scormPairs) {
             sendDebug('matching-dd: SCORM correct-response hit: ' + scormPairs.length + ' pairs');
             sendStatus('Applying recorded correct matches...', '#a6e3a1');
@@ -3002,9 +2967,9 @@
             return;
         }
 
-        // 3) AI fallback — same L#,R# contract as the drag solver
-        let userMsg = `Terms (numbered rows):\n${termTexts.map((t, i) => `L${i + 1}: ${t}`).join('\n')}`
-            + `\n\nDescriptors (dropdown options):\n${descPool.map((d, i) => `R${i + 1}: ${d}`).join('\n')}`;
+        // 3) AI fallback — L# = term, R# = descriptor (same contract)
+        let userMsg = `Terms:\n${termTexts.map((t, i) => `L${i + 1}: ${t}`).join('\n')}`
+            + `\n\nDescriptors:\n${descTexts.map((d, i) => `R${i + 1}: ${d}`).join('\n')}`;
         const fails = pastFailures[questionId];
         if (fails && fails.size) {
             userMsg += `\n\nWARNING — these exact pairings were already tried and WRONG:\n`;
@@ -3022,7 +2987,7 @@
                 const cleaned = aiText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
                 const pairs = [...cleaned.matchAll(/L(\d+)\s*[,→\-:]\s*R(\d+)/gi)]
                     .map(m => ({ l: +m[1], r: +m[2] }))
-                    .filter(p => p.l >= 1 && p.l <= termTexts.length && p.r >= 1 && p.r <= descPool.length);
+                    .filter(p => p.l >= 1 && p.l <= termTexts.length && p.r >= 1 && p.r <= descTexts.length);
                 if (!pairs.length) {
                     releaseFailedQuestion('AI parse fail on dropdown matching.', questionId);
                     return;
@@ -3324,6 +3289,20 @@
         for (const q of quizDefs()) {
             const t = scormNormQuestion(htmlText(q.title || q.prompt || q.question || q.stem || ''));
             if (!t || !(t === target || t.includes(target) || target.includes(t))) continue;
+            // Confirmed Rise shape (C3552): type:"MATCHING" carries no pairs[] —
+            // answers[] holds {title: <term>, matchTitle: <descriptor>}. Checked
+            // first so a stray items/responses array can't shadow it.
+            if (Array.isArray(q.answers) && q.answers.length
+                && q.answers.some(a => a && typeof a.matchTitle === 'string')) {
+                const pairs = [];
+                for (const a of q.answers) {
+                    const li = termTexts.findIndex(x => scormNorm(x) === scormNorm(htmlText(a.title || '')));
+                    const ri = descTexts.findIndex(x => scormNorm(x) === scormNorm(htmlText(a.matchTitle || '')));
+                    if (li === -1 || ri === -1) return null;
+                    pairs.push({ l: li + 1, r: ri + 1 });
+                }
+                if (pairs.length) return pairs;
+            }
             // The pair list may live under several keys depending on the build.
             const pairArr = [q.pairs, q.matches, q.matchings, q.responses, q.items]
                 .find(a => Array.isArray(a) && a.length && typeof a[0] === 'object');

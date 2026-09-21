@@ -468,6 +468,16 @@ The v9.32 force-re-click fired correctly (`stale selected state — resetting be
 
 **Fix:** `detectActiveQuiz` now binds `container` to `.quiz-card--active:not([inert])` (the same selector A1/A2 already use — its error text is what drives the release loop, so it provably exists on these pages). Submits belonging to a stale `quiz-card` are skipped; when no active card exists the old closest-chain applies. Also: when A1 hits its retry bound, it dumps the option markup + card classes into the journal once, so the next DIAG shows the real DOM instead of another guess.
 
+### Live-verified root cause + fixes (v9.34, direct C3552 Playwright session)
+
+The course loaded directly at `…/C3552/1745622841118/scormcontent/index.html#/lessons/DiWquway9QsmZmvzA5JbJm6H_Zeexodw` — quiz defs resolve via `__fetchCourse()` (`quiz.items`, 13 defs incl. the previously-uncollected MATCHING one). Both remaining bugs were root-caused against the live DOM:
+
+**MCQ parity bug (the "Please answer" loop).** Multiple-response options are `<label class="quiz-multiple-response-option"><input type="checkbox">` — a label *wrapping* the input. Any click inside a label forwards to its control, so `applyNums`' triple call (input + label + `__text` div) toggled checkboxes an **even number of times → net unchanged**; the native setter then forced `checked=true` (React never saw it) → submit → "Please answer" → loop. Radios survived because they can't un-toggle — only MULTIPLE_RESPONSE stalled. **Fix:** `setOptState` clicks **once** on `clickTargetFor`, verifies `isChecked` after ~500ms, escalates to the wrapper only if wrong, setter fallback last. Live-verified: the exact looping question graded **Correct** with a single `input.click()`.
+
+**Matching def shape + orientation (why AI fired).** `type:"MATCHING"` defs have no `pairs`/`correct` — pairs live in `answers[]` as `{title: term, matchTitle: descriptor}`; the v9.32 `/match/i` walker now collects them (quizDefs 12→13). `courseDataMatchingPairs` extracts that branch first. The DOM was inverted vs the original solver: rows are `li.matching-item-immobile` (descriptor + `button[data-select-trigger]` combobox, `aria-owns` → separately-mounted listbox); options are `[data-select-item]` with `data-value` = 0-based `li.matching-item-movable` index. `solveMatchingDropdown` rewritten accordingly: pool = movable terms, rows = descriptors, `setRowValue` opens the row's trigger and clicks the option with `data-value` === movable index. Manually driven live → **Correct**.
+
+Also: `committed` check in `detectActiveQuiz` now counts `[data-select-item="current"]:not([data-value=""])` — a filled dropdown row — so a submitted matching-dd card isn't mistaken for unanswered on retake passes.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
