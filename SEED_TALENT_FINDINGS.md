@@ -577,3 +577,9 @@ The Knowledge Check passed cleanly (`cmi: completed/passed/1 — course done`) a
 Incidents/diags now auto-POST to a local capture listener on `127.0.0.1:8766` (port 8765 already serves the local BTTF app, so the legacy `/log` POSTs stay there): `storeIncident` → `POST /incident`, DIAG/DUMP buttons → `POST /diag|sniff`. New `capture_server.js` writes them into `captures/` and serves `GET /latest` (newest file per kind). Silent no-op when the listener isn't running — behavior unchanged otherwise.
 
 **Workflow:** run `node capture_server.js` alongside the course → any stall lands in `captures/` automatically → "check the latest capture" instead of downloading + uploading files manually.
+
+### C1282 tabs block unlocked nothing — new selector variant (v9.43, incident 1790019665083)
+
+C1282's "About Us" lesson gates CONTINUE on a Rise **tabs** block (`button.blocks-tabs__header-item`, role=tab — EXCELLENCE/INNOVATION/IMPACT). C1's interactive selector knew `tab-nav__item` but not this variant → nothing claimed → sweep ↔ Idle loop → `Unknown idle`. **Fix:** added `button.blocks-tabs__header-item` to the C1 selector + `--active` to the current-tab skip + generic `/--(visited|complete|seen)\b/` viewed-marker skip so visited tabs can't cycle forever.
+
+Also fixed: `helperVersion` was hardcoded `'9.33'` in `buildIncident`/`storeIncident` (every incident mislabeled) — centralized into `HELPER_VERSION` const now used by the dump meta too.
