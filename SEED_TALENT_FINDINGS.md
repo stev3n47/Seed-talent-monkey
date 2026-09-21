@@ -530,3 +530,9 @@ The C1256 run sat on the lesson page after START: `state: running`, zero journal
 **Drag-vs-sweep race (found in live verification):** the first drag attempt missed — the F sweep scrolled the block mid-drag and the pointer-move target went stale. E2 now **pins the block into view** (`scrollTop` centered, `Positioning sorting block...`) before each drag and only fires when both card and pile are on-screen; the 2.5 s claim delay also blocks F from wandering mid-drag. After the fix all 5 cards sorted live (`5/5 Cards Correct`), the `completeBlock` divider unlocked, CONTINUE advanced to the next quiz card.
 
 Note: `SEED_UNKNOWN_IDLE` pauses via `applyState('paused')` — in single-frame injection tests the script pauses on its *own* incident postMessage (`window.top` === self). Real usage targets the wrapper frame, so this is an injection artifact, not a bug.
+
+### Scroller resolution bug (v9.38, DIAG 1790016189929)
+
+v9.37 reached `Positioning sorting block...` then went silent again — `scrollers.top` stayed 0 while `Positioning` re-emitted (deduped). Cause: `sortBlock.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow"]')` returns `.lesson-main` — the *nearest* matching ancestor — which on Rise is `overflow:visible` with scrollHeight == clientHeight: a dead container. The pin's `scrollTop +=` wrote to it and `.page-wrap` never moved ? block stayed off-screen ? pin looped ? `Unknown idle` ? pause.
+
+**Fix:** shared `scrollContainerFor(el)` — walks ancestors and returns the first with `scrollHeight > clientHeight + 40` (the element that actually scrolls, `.page-wrap`), falling back to `documentElement`. Applied to the sorting pin, `simulateHumanClick`'s scroll-into-view, and forward-nav's scroll-to-button — all three had the same latent dead-scroller bug. Verified live: the walk skips `.lesson-main` (sh==ch==6127, overflow visible) and resolves `.page-wrap` (sh 6196 / ch 861).

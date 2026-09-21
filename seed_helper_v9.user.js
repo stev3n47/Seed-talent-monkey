@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.37
+// @version      9.38
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.37</span>
+            <span>🤖 Seed Helper v9.38</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -720,6 +720,16 @@
         return true;
     }
 
+    // Nearest ancestor that ACTUALLY scrolls. closest('.page-wrap,.lesson-main')
+    // returns .lesson-main — nearer but never scrollable on Rise — so scrollTop
+    // writes vanished (the sorting-block pin looped silently; DIAG 1790016189929).
+    function scrollContainerFor(el) {
+        for (let p = el && el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+            if (p.clientHeight > 0 && p.scrollHeight > p.clientHeight + 40) return p;
+        }
+        return document.documentElement;
+    }
+
     function reportUnknownIdle() {
         if (!isLikelyCourseContentFrame()) return false;
         const frame = frameOriginPath();
@@ -747,8 +757,7 @@
         try {
             const r = el.getBoundingClientRect();
             if (r.top < 0 || r.bottom > window.innerHeight) {
-                const scroller = el.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
-                scroller.scrollTop += (r.top - window.innerHeight / 2);
+                scrollContainerFor(el).scrollTop += (r.top - window.innerHeight / 2);
             }
         } catch (e) {}
 
@@ -2076,8 +2085,7 @@
             // Safe scroll to button if off-screen
             try {
                 if (el.getBoundingClientRect().bottom > window.innerHeight) {
-                    const scroller = el.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
-                    scroller.scrollTop += 300;
+                    scrollContainerFor(el).scrollTop += 300;
                 }
             } catch(e) {}
 
@@ -2352,8 +2360,7 @@
                     if (pile) {
                         const br = sortBlock.getBoundingClientRect();
                         if (br.top < 0 || br.bottom > window.innerHeight) {
-                            const scroller = sortBlock.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
-                            scroller.scrollTop += (br.top + br.height / 2) - window.innerHeight / 2;
+                            scrollContainerFor(sortBlock).scrollTop += (br.top + br.height / 2) - window.innerHeight / 2;
                             sendStatus('Positioning sorting block...', '#f9e2af', true);
                             nextActionTime = now + 800;
                             return;
