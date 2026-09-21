@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.30
+// @version      9.31
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.30</span>
+            <span>🤖 Seed Helper v9.31</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,7 +419,7 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.30', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.31', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
@@ -510,7 +510,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.30').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.31').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -935,7 +935,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.30',
+            helperVersion: '9.31',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1512,6 +1512,13 @@
             'li.matching-interaction-item.droppable button.matching-interaction-piece'
         )).filter(el => isVisible(el));
 
+        // Dropdown-matching variant: li.matching-item rows each carrying a
+        // <select> or a popup-listbox trigger instead of draggable pieces.
+        // Without this check the LIs fall through to the generic MCQ path.
+        const ddRows = Array.from(container.querySelectorAll('li.matching-item'))
+            .filter(isOptionVisible)
+            .filter(r => r.querySelector('select, [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="true"]'));
+
         // Step 4: generate a stable quiz ID
         let titleEl = container.querySelector('.quiz-card__title, [class*="quiz-card__title"], .quiz-question__title, [class*="question-title"]');
         if (!titleEl) titleEl = container.querySelector('h1, h2, h3, h4, legend');
@@ -1551,6 +1558,9 @@
         // Step 5: classify
         if (col1Btns.length >= 2 && col2Btns.length >= 2) {
             return { type: 'matching', submitBtn, id: qId, col1: col1Btns, col2: col2Btns };
+        }
+        if (ddRows.length >= 2) {
+            return { type: 'matching-dd', submitBtn, id: qId, rows: ddRows };
         }
         if (mcqLabels.length >= 2) {
             // Classify by the actual control type, scanning ALL wrappers then the
@@ -1716,6 +1726,7 @@
                     }
                     if (quiz.type === 'mcq') solveQuiz(quiz.id, quiz.labels, quiz.submitBtn, quiz.isMulti);
                     else if (quiz.type === 'fill_in_blank') solveFillInTheBlank(quiz.id, quiz.input, quiz.submitBtn);
+                    else if (quiz.type === 'matching-dd') solveMatchingDropdown(quiz.id, quiz.rows, quiz.submitBtn);
                     else solveMatchingQuestion(quiz.id, quiz.col1, quiz.col2, quiz.submitBtn);
                 }, delay);
                 return;
@@ -2800,6 +2811,184 @@
 
 
     // =========================================================
+    // 10b. DROPDOWN-MATCHING SOLVER (li.matching-item rows)
+    // Each row = term + <select> or popup-listbox trigger. Answers come from
+    // courseData pairs → SCORM prior interactions → AI, then are committed by
+    // setting the select value or clicking the matching menu option.
+    // =========================================================
+    async function solveMatchingDropdown(questionId, rows, submitBtn) {
+        isSolving = true;
+        sendStatus('Analysing dropdown matching...', '#f9e2af');
+
+        const controlOf = row => row.querySelector('select')
+            || row.querySelector('[role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="true"], button');
+
+        const termOf = row => {
+            const cand = row.querySelector('[class*="matching-item__term"], [class*="term"], [class*="matching-item__content"]');
+            if (cand && (cand.innerText || '').trim()) return cand.innerText.trim();
+            const clone = row.cloneNode(true);
+            clone.querySelectorAll('select, [role="combobox"], [aria-haspopup], button, [class*="visually-hidden"], script, style').forEach(n => n.remove());
+            return (clone.innerText || clone.textContent || '')
+                .replace(/Selectable item/gi, '').replace(/^\s*(?:\d+\s*[).:\-]?\s*)+/, '').replace(/\s+/g, ' ').trim();
+        };
+
+        // Descriptor pool: union of every row's option texts. Native selects
+        // are read directly; a custom trigger is opened once to read its menu.
+        const descPool = [];
+        const poolOpts = sel => Array.from(sel.options).filter(o => {
+            const t = (o.textContent || '').trim();
+            return t && !o.disabled && !/^\s*(select|choose|pick|—|-)\s*$/i.test(t);
+        });
+        for (const row of rows) {
+            const sel = row.querySelector('select');
+            if (!sel) continue;
+            for (const o of poolOpts(sel)) {
+                const t = o.textContent.trim();
+                if (!descPool.includes(t)) descPool.push(t);
+            }
+        }
+        if (!descPool.length) {
+            const trig = controlOf(rows[0]);
+            if (trig && trig.tagName !== 'SELECT') {
+                simulateHumanClick(trig);
+                await sleep(400);
+                Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, [role="menuitemradio"], [role="menuitem"]'))
+                    .filter(o => isVisible(o))
+                    .forEach(o => { const t = (o.innerText || '').trim(); if (t && !descPool.includes(t)) descPool.push(t); });
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                simulateHumanClick(trig); // close if Escape didn't
+                await sleep(300);
+            }
+        }
+
+        const termTexts = rows.map(termOf);
+        sendDebug(`matching-dd: ${termTexts.length} terms, ${descPool.length} descriptors, control=${controlOf(rows[0]) ? controlOf(rows[0]).tagName : 'none'}`);
+        if (!termTexts.length || !descPool.length) {
+            releaseFailedQuestion('Could not read dropdown-matching rows/options.', questionId);
+            return;
+        }
+
+        const pickIdx = (list, text) => {
+            const n = scormNorm(text);
+            let i = list.findIndex(x => scormNorm(x) === n);
+            if (i === -1) i = list.findIndex(x => { const m = scormNorm(x); return m.includes(n) || n.includes(m); });
+            return i;
+        };
+
+        const setRowValue = async (row, descText) => {
+            const sel = row.querySelector('select');
+            if (sel) {
+                const opts = poolOpts(sel);
+                const idx = pickIdx(opts.map(o => o.textContent.trim()), descText);
+                if (idx === -1) return false;
+                sel.value = opts[idx].value;
+                sel.dispatchEvent(new Event('input', { bubbles: true }));
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+            const trig = controlOf(row);
+            if (!trig) return false;
+            simulateHumanClick(trig);
+            await sleep(350);
+            const opts = Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, [role="menuitemradio"], [role="menuitem"]'))
+                .filter(o => isVisible(o));
+            const idx = pickIdx(opts.map(o => (o.innerText || '').trim()), descText);
+            if (idx === -1) {
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                await sleep(250);
+                return false;
+            }
+            simulateHumanClick(opts[idx]);
+            await sleep(300);
+            return true;
+        };
+
+        const applyPairs = async (pairs) => {
+            const labelLines = pairs.map(p => `${termTexts[p.l - 1] || '?'} ➔ ${descPool[p.r - 1] || '?'}`);
+            const history = loadHistory();
+            if (!history[questionId]) {
+                history[questionId] = {
+                    type: 'matching-dd', course: getCourseName(),
+                    left: termTexts, right: descPool, attempts: []
+                };
+                saveHistory(history);
+            }
+            sendMatches(labelLines.join('\n'));
+            lastAttempt[questionId] = JSON.stringify(labelLines);
+            lastSolvedQuestion = questionId;
+
+            sendStatus(`Setting ${pairs.length} dropdown matches...`, '#89b4fa');
+            let failed = 0;
+            for (const p of pairs) {
+                const ok = await setRowValue(rows[p.l - 1], descPool[p.r - 1]);
+                if (!ok) { failed++; sendDebug(`matching-dd: failed to set row ${p.l} → "${(descPool[p.r - 1] || '').slice(0, 40)}"`); }
+                await sleep(350 + Math.random() * 350);
+            }
+            if (failed) {
+                // Submitting an incompletely-set card loops on "Please answer" —
+                // release instead so the retry can re-read the control type.
+                releaseFailedQuestion(`matching-dd: ${failed}/${pairs.length} rows wouldn't set.`, questionId);
+                return;
+            }
+
+            sendStatus('Matched! Submitting...', '#a6e3a1');
+            await sleep(1200 + Math.random() * 800);
+            if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+            isSolving = false;
+        };
+
+        // 1) courseData — deterministic answer key
+        const cdPairs = courseDataMatchingPairs(questionId, termTexts, descPool);
+        if (cdPairs && cdPairs.length) {
+            sendDebug('matching-dd: courseData pairs resolved (' + cdPairs.length + ')');
+            sendStatus('Applying course matches...', '#a6e3a1');
+            answerSrc[questionId] = 'courseData';
+            try { await applyPairs(cdPairs); } catch(e) { releaseFailedQuestion('matching-dd apply failed: ' + e.message, questionId); }
+            return;
+        }
+
+        // 2) SCORM prior-correct responses (same src[.]dst pattern as drag matching)
+        const scormPairs = scormMatchingPairs(questionId, termTexts, descPool);
+        if (scormPairs) {
+            sendDebug('matching-dd: SCORM correct-response hit: ' + scormPairs.length + ' pairs');
+            sendStatus('Applying recorded correct matches...', '#a6e3a1');
+            answerSrc[questionId] = 'scorm';
+            try { await applyPairs(scormPairs); } catch(e) { releaseFailedQuestion('matching-dd apply failed: ' + e.message, questionId); }
+            return;
+        }
+
+        // 3) AI fallback — same L#,R# contract as the drag solver
+        let userMsg = `Terms (numbered rows):\n${termTexts.map((t, i) => `L${i + 1}: ${t}`).join('\n')}`
+            + `\n\nDescriptors (dropdown options):\n${descPool.map((d, i) => `R${i + 1}: ${d}`).join('\n')}`;
+        const fails = pastFailures[questionId];
+        if (fails && fails.size) {
+            userMsg += `\n\nWARNING — these exact pairings were already tried and WRONG:\n`;
+            for (const f of fails) { try { userMsg += `  - ${JSON.parse(f).join(' | ')}\n`; } catch(e) {} }
+        }
+        userMsg += `\n\nOutput ONLY pairs as L#,R# one per line. Example:\nL1,R3\nL2,R1\nL3,R2`;
+
+        sendStatus('Asking AI for matches...', '#89b4fa');
+        answerSrc[questionId] = 'ai';
+        callOpenRouter(
+            'You solve matching quizzes. Output ONLY pairs as L#,R# one per line. No words, no explanations.',
+            userMsg,
+            0,
+            async (aiText) => {
+                const cleaned = aiText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+                const pairs = [...cleaned.matchAll(/L(\d+)\s*[,→\-:]\s*R(\d+)/gi)]
+                    .map(m => ({ l: +m[1], r: +m[2] }))
+                    .filter(p => p.l >= 1 && p.l <= termTexts.length && p.r >= 1 && p.r <= descPool.length);
+                if (!pairs.length) {
+                    releaseFailedQuestion('AI parse fail on dropdown matching.', questionId);
+                    return;
+                }
+                try { await applyPairs(pairs); } catch(e) { releaseFailedQuestion('matching-dd apply failed: ' + e.message, questionId); }
+            }
+        );
+    }
+
+
+    // =========================================================
     // 10. DRAG SIMULATOR
     // =========================================================
     async function simulateDrag(src, tgt) {
@@ -2979,6 +3168,9 @@
             if (!o || typeof o !== 'object') return;
             if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length))) {
                 _quizDefs.push(o);
+            } else if (o.title && Array.isArray(o.pairs) && o.pairs.length) {
+                // Matching defs keep correct pairings in `pairs`, not answers/correct.
+                _quizDefs.push(o);
             }
             for (const k in o) walk(o[k]);
         };
@@ -3061,6 +3253,45 @@
             pairs.push({ l: l + 1, r: r + 1 });
         }
         return pairs.length ? pairs : null;
+    }
+
+    // Course-model matching pairs → {l, r} 1-based indices over the rendered
+    // term/descriptor lists. `pairs` entries vary by Rise build, so each side
+    // is read through flexible key names; values may be strings or objects.
+    function courseDataMatchingPairs(qId, termTexts, descTexts) {
+        const target = scormNormQuestion(qId);
+        if (!target) return null;
+        const sideText = (p, keys) => {
+            for (const k of keys) {
+                const v = p && p[k];
+                if (typeof v === 'string' && v.trim()) return v;
+                if (v && typeof v === 'object') {
+                    const s = v.title || v.text || v.label || v.value;
+                    if (typeof s === 'string' && s.trim()) return s;
+                }
+            }
+            return null;
+        };
+        for (const q of quizDefs()) {
+            const t = scormNormQuestion(htmlText(q.title || q.prompt || ''));
+            if (!t || !(t === target || t.includes(target) || target.includes(t))) continue;
+            const pairs = [];
+            if (Array.isArray(q.pairs) && q.pairs.length) {
+                for (const p of q.pairs) {
+                    const l = sideText(p, ['left', 'source', 'prompt', 'term', 'question', 'a']);
+                    const r = sideText(p, ['right', 'target', 'response', 'match', 'answer', 'b']);
+                    if (!l || !r) { sendDebug('matching-dd pair shape unknown: ' + Object.keys(p || {}).join(',')); return null; }
+                    const li = termTexts.findIndex(x => scormNorm(x) === scormNorm(htmlText(l)));
+                    const ri = descTexts.findIndex(x => scormNorm(x) === scormNorm(htmlText(r)));
+                    if (li === -1 || ri === -1) return null;
+                    pairs.push({ l: li + 1, r: ri + 1 });
+                }
+                return pairs.length ? pairs : null;
+            }
+            sendDebug('matching-dd def keys: ' + Object.keys(q).slice(0, 15).join(','));
+            return null;
+        }
+        return null;
     }
 
     // Releases a question whose AI solve failed so Priority A can retry it.
