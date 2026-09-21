@@ -542,3 +542,16 @@ v9.37 reached `Positioning sorting block...` then went silent again � `scrollers
 Real run on C1256: all 5 sort cards landed (18:48:32�44), `CONTINUE` unlocked (`disabled:false`, `lockHint:false`) � then `Unknown idle` paused it one tick after the last card. Cause: `stuckSince` began accumulating ~18:48:30 and each `Sorting card` claim set `nextActionTime` (+2.5 s), routing ticks through the delay branch � which counts continuous delay toward the 15 s watchdog but never sees that the delay IS the work. At 15 s it fired before the post-sort sweep reached the now-unlocked divider.
 
 **Fix:** work claims reset `stuckSince` (sort pin, sort drag, C1 interactive claims, video watchdog wait, video/play-button claims). The delay branch also exempts `isSolving` � AI round-trips legitimately exceed 15 s (the tail already exempted it, but delay returns never reach the tail). Pattern: any `nextActionTime` that means "work in progress" must reset the idle clock; only unowned delay counts as a stall.
+
+### quiz-match matching variant — misdetect + missed drops (v9.40, DIAG 1790016995730)
+
+C1256 knowledge-check matching (`li.quiz-match__item--draggable` chevron terms → `li.quiz-match__item--immobile.droppable` descriptor cards) was misclassified as `single-select (6 opts)`: the droppable LIs matched the generic option scan while the real matching selectors (`button.matching-interaction-piece`) found nothing. It then burned AI retries on a question the course model answers deterministically (`answers[].title → matchTitle`), and the sweep kept scrolling mid-solve (top-reset pulled the card off-screen — the "scrolls all the way up" symptom).
+
+**Fix:**
+- `detectActiveQuiz` collects the quiz-match columns and classifies `matching` before MCQ. Droppable LIs are `aria-hidden="true"` hit targets — `isVisible`/`isOptionVisible` would drop them, so this variant filters on rect size only (off-viewport rows are still valid pair members; filtering them produced `L(4) R(4)` and broke courseData resolution).
+- `solveMatchingQuestion` now tries `courseDataMatchingPairs` before SCORM/AI (same order as the dropdown solver) — MATCHING defs resolve with zero API calls.
+- Priority F sweep yields while `isSolving` — scrolling mid-solve invalidated drag coords and re-armed the top-reset.
+- quiz-match remounts/re-sorts items after every drop — held refs detach (verified live: the dragged li never gained `--matched` while a fresh query showed it at index 0). The drag loop re-resolves L/R by text each pair.
+- Per-pair land verification + one retry + a final residual pass. A missed drop wedges the card at 5/6 (submit stays `--disabled` and the partial state counts as "committed" → permanent skip → infinite sweep). If items still refuse to land the question is released so the idle watchdog reports it honestly instead of looping forever. Drop targets are scrolled into the real scroller first (`ensureVis`) since the pointer hit-test resolves at viewport coords.
+
+**Verified live:** `Dragging 6 pairs` from courseData → `matching: L5 → R1 did not land — retrying` (exactly the wedge path) → `Matched! Submitting...` → `Advancing...` → next lesson, where the following MCQ solved via `Course-data answer hit`.
