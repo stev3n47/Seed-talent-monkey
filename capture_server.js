@@ -1,5 +1,5 @@
 // Seed Helper capture listener — receives auto-posted incidents/diags/sniffs
-// from the userscript (127.0.0.1:8765) and writes them into captures/.
+// from the userscript (127.0.0.1:8766) and writes them into captures/.
 // Run:  node capture_server.js        (leave it running while using START)
 // Then: "check the latest capture" → the newest file in captures/ has the JSON.
 const http = require('http');
@@ -60,4 +60,4 @@ const server = http.createServer((req, res) => {
     res.writeHead(404); res.end();
 });
 
-server.listen(8765, '127.0.0.1', () => console.log(`seed capture listener → ${OUT} (GET /latest for newest)`));
+server.listen(8766, '127.0.0.1', () => console.log(`seed capture listener → ${OUT} (GET /latest for newest)`));

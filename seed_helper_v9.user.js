@@ -426,7 +426,7 @@
                 };
                 downloadJson('seed_' + (withEvents ? 'sniff' : 'diag') + '_' + Date.now() + '.json', payload);
                 try {
-                    GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/" + (withEvents ? 'sniff' : 'diag'),
+                    GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8766/" + (withEvents ? 'sniff' : 'diag'),
                         data: JSON.stringify(payload), headers: { "Content-Type": "application/json" } });
                 } catch (e3) {}
                 updateStatus((withEvents ? 'Dumped ' + sniffEntries.length + ' requests + ' : 'Diag: ') + journal.length + ' journal entries, ' + Object.keys(diags).length + ' frames.', '#94e2d5');
@@ -588,9 +588,9 @@
                 latestIncident = safe;
                 if (incidentBtn) incidentBtn.style.display = 'inline-block';
                 // Pipeline: hand the incident to the local capture listener
-                // (capture_server.js) — silent no-op when it isn't running.
+                // (capture_server.js, port 8766) — silent no-op when it isn't running.
                 try {
-                    GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/incident",
+                    GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8766/incident",
                         data: JSON.stringify(safe), headers: { "Content-Type": "application/json" } });
                 } catch (e2) {}
             } catch (e) {}
