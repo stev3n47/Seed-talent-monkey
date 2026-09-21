@@ -5,3 +5,4 @@ seed_incident_*.json
 !captures/seed_incident_*.json
 *.log
 .playwright-mcp/
+captures/
