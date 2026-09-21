@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.28
+// @version      9.29
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.28</span>
+            <span>🤖 Seed Helper v9.29</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,7 +419,7 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.28', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.29', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
@@ -510,7 +510,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.28').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.29').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -935,7 +935,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.28',
+            helperVersion: '9.29',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1038,7 +1038,7 @@
             url: sanitizeIncidentUrl(location.href),
             title: clipStr(document.title, 80),
             engine: detectCourseEngine(),
-            state: String(state),
+            state: String(window === window.top ? state : iframeState),
             isSolving: !!isSolving,
             frame: clipStr(frameOriginPath(), 200)
         };
@@ -1070,7 +1070,7 @@
             };
         } catch (e) {}
         try {
-            d.sweep = { armed: pageSweepArmed.size, done: pageSweepDone.size };
+            d.sweep = { armed: sweepArmed.size, reswept: sweepReswept.size };
         } catch (e) {}
         return d;
     }
@@ -1231,8 +1231,9 @@
     const clickedNavs   = new Set();
     const fwdClickLog   = new Map();
     const interactedBlocks = {};
-    const pageSweepArmed = new Set();
-    const pageSweepDone  = new Set();
+    const sweepArmed    = new Set();
+    const sweepTopDone  = new Set();
+    const sweepReswept  = new Set();
     const answerSrc     = {};   // questionId -> 'courseData'|'history'|'scorm'|'ai'
     const watchedMedia  = new Set();
     const mediaRetries  = {};
@@ -1416,8 +1417,9 @@
         clickedNavs.clear();
         fwdClickLog.clear();
         Object.keys(interactedBlocks).forEach(k => delete interactedBlocks[k]);
-        pageSweepArmed.clear();
-        pageSweepDone.clear();
+        sweepArmed.clear();
+        sweepTopDone.clear();
+        sweepReswept.clear();
         watchedMedia.clear();
         isSolving = false;
         nextActionTime = 0;
@@ -1980,10 +1982,6 @@
             } catch(e) {}
 
             sendStatus('Advancing...', '#a6e3a1', true);
-            // Lesson pages share one hash, so re-arm the Priority F view-sweep
-            // for whatever page this navigation lands on.
-            pageSweepArmed.clear();
-            pageSweepDone.clear();
             setTimeout(() => simulateHumanClick(el), 350 + Math.random() * 300);
             nextActionTime = now + 1500;
             return;
@@ -2234,32 +2232,45 @@
             });
             // Rise "completeAll" dividers render only a hint while locked — no
             // button — so they never reach fwdCandidates. Their gate is every
-            // block above marked viewed by the scroller's IntersectionObserver;
-            // jump-scrolls to clickables skip over blocks, leaving them
-            // unviewed and the divider locked forever. Sweep the real scroller
-            // top→bottom once per page so each block dwells in view.
+            // block above marked viewed by the scroller's IntersectionObserver,
+            // and lazy blocks mount only while scrolling. Sweep the real
+            // scroller top→bottom; reaching the bottom ends the pass, and a
+            // page change (new signature / scrollTop reset) re-sweeps naturally.
             const scroller = (lockedBtn && lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]'))
                 || Array.from(document.querySelectorAll('.page-wrap, .page__wrapper, .lesson-main')).find(s => s.scrollHeight > s.clientHeight + 40)
                 || document.documentElement;
             if (scroller && scroller.scrollHeight > scroller.clientHeight + 40) {
-                const pageKey = clipStr(frameOriginPath() + '|' + (location.hash || document.title || ''), 240);
-                if (!pageSweepDone.has(pageKey)) {
-                    if (!pageSweepArmed.has(pageKey)) {
-                        pageSweepArmed.add(pageKey);
+                const heading = document.querySelector('h1, h2');
+                const sig = clipStr(frameOriginPath() + '|' + (location.hash || '') + '|' + scroller.scrollHeight + '|' + (heading ? heading.innerText.trim().slice(0, 40) : ''), 240);
+                if (!sweepArmed.has(sig)) {
+                    sweepArmed.add(sig);
+                    // One top-reset per page (hash) — covers mid-page landings.
+                    // Not per-sig: lazy mounts grow scrollHeight and re-arming
+                    // must not keep yanking the viewport back to the top.
+                    const hashKey = clipStr(frameOriginPath() + '|' + (location.hash || ''), 240);
+                    if (!sweepTopDone.has(hashKey)) {
+                        sweepTopDone.add(hashKey);
                         if (scroller.scrollTop > 60) scroller.scrollTop = 0;
-                        sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
-                        nextActionTime = now + 1500;
-                        return;
                     }
-                    const before = scroller.scrollTop;
+                    sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
+                    nextActionTime = now + 1500;
+                    return;
+                }
+                if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 5) {
                     scroller.scrollTop += 250;
-                    const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 5;
-                    if (scroller.scrollTop !== before || atBottom) {
-                        sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
-                        nextActionTime = now + 1500;
-                        if (atBottom) pageSweepDone.add(pageKey);
-                        return;
-                    }
+                    sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
+                    nextActionTime = now + 1500;
+                    return;
+                }
+                // Bottom reached but a gate is still locked: blocks above were
+                // likely skipped (mid-page landing). One resweep per signature.
+                const stillLocked = !!lockedBtn || /complete the content above|before moving on/i.test(document.body ? document.body.innerText : '');
+                if (stillLocked && !sweepReswept.has(sig)) {
+                    sweepReswept.add(sig);
+                    scroller.scrollTop = 0;
+                    sendStatus('Re-reviewing page to unlock Continue...', '#f9e2af', true);
+                    nextActionTime = now + 1500;
+                    return;
                 }
             }
         }

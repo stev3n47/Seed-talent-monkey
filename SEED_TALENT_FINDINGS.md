@@ -417,6 +417,24 @@ Purely additive diagnostics (no runner-logic changes):
 - **runId**: START stamps `seed_runid`; included in dump/diag meta so multiple files correlate to one session.
 - Panel debug line now shows the last 5 messages (rolling) instead of only the most recent.
 
+### v9.28 DIAG empty + stall root cause — hash-keyed sweep suppression (v9.29)
+
+DIAG `1789762421315` returned `journal:[]`, `diags:{}` despite live activity — **the `@grant` block was missing `GM_listValues`/`GM_deleteValue`**, so every GM-key enumeration silently failed (try/catch swallowed it). Writes worked; reads returned empty. Fixed in `a11f54a`. Lesson: **grant changes require re-saving the script in Violentmonkey** — the header is only re-read on install/update.
+
+DIAG `1789993701744` (post-fix) captured the real stall:
+
+- Content frame alive and running (journal: "Completing interactive block", "Advancing") — injection and SEED_STATE relay confirmed working on the 3-deep frame tree.
+- `sweep.armed: 0` while `lockHint: true`, `continueBtn: null`, `checkboxUnchecked: 1`, `accordionClosed: 2` — the Priority F sweep had **never armed** on that page.
+- Root cause: `pageSweepDone`/`pageSweepArmed` were keyed on `framePath + location.hash`, but **all four lesson pages share one hash**. Once any page's sweep marked the key done — e.g., a manual scroll landing near the bottom sets `atBottom` immediately — every later page on the hash skipped the sweep permanently. The user's manual scroll mounted the lazy checkbox, the loop clicked it, and the course flowed — until the next divider.
+- Secondary diag bug: `buildDiag()` reported the frame-local `state` var, so running content frames showed `state:"stopped"`. It now reports `iframeState` for non-top frames.
+
+v9.29 redesign — no done-set at all:
+
+- Signature = `framePath | hash | scrollHeight | heading` in `sweepArmed`; a page change (new height/heading) or lazy-mount growth produces a new signature and re-arms automatically. Reaching the bottom simply stops stepping — nothing persists to suppress the next page.
+- `sweepTopDone` (per hash) limits the scrollTop=0 reset to once per page load, so lazy-mount growth re-arms without yanking the viewport back to top each burst.
+- `sweepReswept` (per signature) allows exactly one return-to-top resweep when the bottom is reached but a gate is still locked — covers mid-page landings where upper blocks were never viewed.
+- Sequence verified by construction against the live package: arm → dwell 1.5s (top blocks register) → step 250px/1.5s → lazy controls mount mid-sweep and get clicked by C1 → bottom → resweep if still locked → Continue appears → forward nav.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
