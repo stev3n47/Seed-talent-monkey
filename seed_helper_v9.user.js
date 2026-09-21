@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.38
+// @version      9.39
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.38</span>
+            <span>🤖 Seed Helper v9.39</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1669,9 +1669,12 @@
             // perpetually re-armed nextActionTime is indistinguishable from a
             // dead script (DIAG 1790014642688 signature). Watch it like any
             // other stall: >15s of continuous delay reports an incident.
-            if (!stuckSince) stuckSince = now;
+            // isSolving is real work (AI round-trips exceed 15s) — exempt it
+            // the same way the tick tail does.
+            if (isSolving) stuckSince = 0;
+            else if (!stuckSince) stuckSince = now;
             sendDebug(isSolving ? 'Waiting for AI...' : `Delay ${Math.round((nextActionTime - now) / 1000)}s`);
-            if (now - stuckSince >= 15000) reportUnknownIdle();
+            if (!isSolving && now - stuckSince >= 15000) reportUnknownIdle();
             return;
         }
 
@@ -2220,7 +2223,8 @@
                     else simulateHumanClick(el);
                 }, 250 + Math.random() * 250);
                 nextActionTime = now + 900;
-                return;
+                stuckSince = 0;   // a claimed interactive is progress — don't
+                return;           // let its delay accumulate into a false idle
             }
         }
 
@@ -2248,6 +2252,7 @@
                     if (m.__seedWd) {
                         sendStatus('Video playing...', '#f9e2af', true);
                         nextActionTime = now + 3000;
+                        stuckSince = 0;
                         return;
                     }
 
@@ -2312,6 +2317,7 @@
                     }, 800);
 
                     nextActionTime = now + 7000;
+                    stuckSince = 0;
                     return;
                 }
 
@@ -2331,6 +2337,7 @@
                 sendStatus(`Clicking Play button (attempt ${att + 1})...`, '#f9e2af', true);
                 setTimeout(() => simulateHumanClick(pb), 400);
                 nextActionTime = now + 2000;
+                stuckSince = 0;
                 return;
             }
         }
@@ -2363,6 +2370,7 @@
                             scrollContainerFor(sortBlock).scrollTop += (br.top + br.height / 2) - window.innerHeight / 2;
                             sendStatus('Positioning sorting block...', '#f9e2af', true);
                             nextActionTime = now + 800;
+                            stuckSince = 0;
                             return;
                         }
                         if (isVisible(card) && isVisible(pile)) {
@@ -2372,6 +2380,7 @@
                                 sendStatus(`Sorting card: ${(card.innerText || '').trim().slice(0, 30)} → ${_sortingKey[card.id]}`, '#f9e2af', true);
                                 setTimeout(() => { try { simulateDrag(card, pile); } catch(e) {} }, 400);
                                 nextActionTime = now + 2500;
+                                stuckSince = 0;
                                 return;
                             }
                         }
