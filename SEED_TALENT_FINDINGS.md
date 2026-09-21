@@ -583,3 +583,7 @@ Incidents/diags now auto-POST to a local capture listener on `127.0.0.1:8766` (p
 C1282's "About Us" lesson gates CONTINUE on a Rise **tabs** block (`button.blocks-tabs__header-item`, role=tab — EXCELLENCE/INNOVATION/IMPACT). C1's interactive selector knew `tab-nav__item` but not this variant → nothing claimed → sweep ↔ Idle loop → `Unknown idle`. **Fix:** added `button.blocks-tabs__header-item` to the C1 selector + `--active` to the current-tab skip + generic `/--(visited|complete|seen)\b/` viewed-marker skip so visited tabs can't cycle forever.
 
 Also fixed: `helperVersion` was hardcoded `'9.33'` in `buildIncident`/`storeIncident` (every incident mislabeled) — centralized into `HELPER_VERSION` const now used by the dump meta too.
+
+### C1282 tabs ping-pong — EXCELLENCE↔INNOVATION, IMPACT starved (v9.44)
+
+v9.43 claimed the tabs block but looped between the first two tabs forever: with INNOVATION active, EXCELLENCE was the first non-active tab in DOM order and got re-clicked every tick. Rise tab strips expose **no viewed marker** (`--after-active` is positional only), so the marker skip can't disambiguate. **Fix:** sequential forward-only progression for `blocks-tabs__header-item` and `tab-nav__item` — only the tab immediately after the active one is clickable (wraps to index 0 when the last is active), same model as the slide-dots guard.

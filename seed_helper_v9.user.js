@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.43
+// @version       9.44
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.43';
+    const HELPER_VERSION = '9.44';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
 
     function getOpenRouterApiKey() {
@@ -167,7 +167,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.43</span>
+            <span>🤖 Seed Helper v9.44</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -2209,6 +2209,19 @@
                 }
 
                 const block = el.closest('[data-block-id]');
+
+                // Tab strips expose no "viewed" marker, so arbitrary non-active
+                // clicks ping-pong between early tabs and starve the rest
+                // (C1282 EXCELLENCE↔INNOVATION loop, IMPACT never reached).
+                // Sequential: only the tab right after the active one, wrapping
+                // to index 0 when the last tab is active.
+                const tabsSel = el.matches('button.blocks-tabs__header-item') ? 'button.blocks-tabs__header-item'
+                              : el.matches('button.tab-nav__item') ? 'button.tab-nav__item' : null;
+                if (tabsSel) {
+                    const allTabs = Array.from((block || document).querySelectorAll(tabsSel));
+                    const activeTabIdx = allTabs.findIndex(d => /--active\b/.test(d.className) || d.getAttribute('aria-selected') === 'true');
+                    if (allTabs.indexOf(el) !== (activeTabIdx + 1) % allTabs.length) continue;
+                }
 
                 // For slide dots, strictly enforce forward-only navigation to avoid infinite loops
                 if (el.classList.contains('blocks-slide-indicator__button')) {
