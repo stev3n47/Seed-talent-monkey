@@ -478,6 +478,16 @@ The course loaded directly at `…/C3552/1745622841118/scormcontent/index.html#/
 
 Also: `committed` check in `detectActiveQuiz` now counts `[data-select-item="current"]:not([data-value=""])` — a filled dropdown row — so a submitted matching-dd card isn't mistaken for unanswered on retake passes.
 
+### Double-activation root cause (v9.35, DIAG 1790000963923 — live-verified)
+
+The v9.34 run still looped on "Please answer" — the user watched options select then deselect. Root cause sat **inside `simulateHumanClick` itself**: it dispatched a synthetic `click` event AND called `el.click()` — **both** are real activations on checkboxes/radios (and label-forwarded controls). Two toggles = net unchanged DOM while React's `onChange` fired twice; a `__reactProps$` mock call then invoked the handler a third time with a stale `target`. Radios masked it (re-clicking a checked radio is a no-op) — only `MULTIPLE_RESPONSE` checkboxes and toggle-widgets broke.
+
+**Fix:** `simulateHumanClick` now dispatches pointer/mouse pre-events only (Radix triggers still need `pointerdown`), then performs **exactly one** activation — the inner `input` for wrapper elements (clicking a wrapper inside a `<label>` forwards a second click), `el.click()` otherwise. The `__reactProps$` block is gone: `el.click()` already reaches React's root-delegated listeners.
+
+**Verification (live Playwright, real C3552 quiz):** ran the verbatim v9.35 functions against the active `quiz-multiple-response-option` card — one `sim` call per option, verify, submit → Rise **graded the submission** (`Incorrect` on a shuffled option — a real grading, vs "Please answer" = uncommitted). Old sequence measured DOM flicker consistent with the user's "selects then deselects" report.
+
+Testing workflow note: `localhost` script-src injection is PNA-blocked from public origins; raw.githubusercontent 404s on private repos. Verbatim-function injection via `browser_evaluate` is the working pattern; `eval` and inline `<script>` are permitted on the Rise content frame.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.
