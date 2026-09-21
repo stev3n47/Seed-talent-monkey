@@ -488,6 +488,16 @@ The v9.34 run still looped on "Please answer" — the user watched options selec
 
 Testing workflow note: `localhost` script-src injection is PNA-blocked from public origins; raw.githubusercontent 404s on private repos. Verbatim-function injection via `browser_evaluate` is the working pattern; `eval` and inline `<script>` are permitted on the Rise content frame.
 
+### Labeled-graphic loop (v9.36, DIAG 1790011519015 — live-verified on C1256)
+
+New course "(the) Essence Product Line" stalled with `Re-clicking forward control xN: clrpdwv2u01ck3575lokfa1od`. The block is `interactive-fullscreen/labeledgraphic` — 6 `button.labeled-graphic-marker` pins, each opening a bubble card with its own `button.bubble__next`/`bubble__prev`/`bubble__close` pager (`aria-label="Next"`). The bubble pager buttons report `visibility:visible` + layout size **even when their bubble is closed**, so forward-nav claimed `bubble__next` via `[aria-label*="Next" i]`, clicked it every 8s, and looped — the click only pages an (invisible) bubble card, never navigates.
+
+**Fixes:**
+- D exclusion: `button[class*="bubble__"], [class*="bubble"] button` — bubble controls are always intra-block, never page nav.
+- C1 skip: viewed markers carry `labeled-graphic-marker--complete` + `aria-label "…, Viewed"` (this build doesn't use `is-visited`), so markers were re-clicked every tick after viewing. Both signals now skip.
+
+**Verified live:** clicked all 6 markers → each flipped to `Viewed`/`--complete` → `CONTINUE` button unlocked (`disabled` cleared). Markers remain clickable while a bubble is open (`elementFromPoint` hits the marker pin), so no close-bubble step is needed.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.35
+// @version      9.36
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.35</span>
+            <span>🤖 Seed Helper v9.36</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1985,6 +1985,11 @@
             // Forward-nav would claim them once via data-block-id navId, dedupe every
             // later click, and keep hasUnlockedFwd true so C1 never runs.
             if (el.matches('button.carousel-controls-next, button.carousel-controls-prev, button.carousel-controls-item-btn, button.block-flashcards-slider__arrow, button.process-counter__btn, button.process-control--next, button.carousel-slider__control--next, button.block-carousel__control--next')) return;
+            // Labeled-graphic bubble pagers (bubble__next carries aria-label="Next"):
+            // they page between marker cards INSIDE the block — never page navigation.
+            // They also stay rect-visible when their bubble is closed, so D would
+            // claim and re-click them forever (DIAG 1790011519015).
+            if (el.matches('button[class*="bubble__"], [class*="bubble"] button')) return;
             const cleanT = t.replace(/[^A-Z0-9\s]/g, '').trim();
             const isTerminal = isTerminalNavLabel(cleanT);
             const isFwd = !isTerminal && (
@@ -2093,8 +2098,11 @@
 
                 // Skip accordions that are already open
                 if (el.getAttribute('aria-expanded') === 'true') continue;
-                // Skip labeled graphic markers that are visited
-                if (el.classList.contains('is-visited')) continue;
+                // Skip labeled graphic markers that are visited. C1256 uses
+                // --complete + aria-label "Viewed" (not is-visited), so without
+                // this every viewed marker is re-clicked each tick.
+                if (el.classList.contains('is-visited') || el.classList.contains('labeled-graphic-marker--complete')) continue;
+                if (el.classList.contains('labeled-graphic-marker') && /,\s*Viewed\s*$/i.test(el.getAttribute('aria-label') || '')) continue;
 
                 // Skip checkboxes that are already checked
                 if (el.getAttribute('aria-checked') === 'true') continue;
