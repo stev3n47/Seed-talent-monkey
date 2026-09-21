@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.34
+// @version      9.35
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.34</span>
+            <span>🤖 Seed Helper v9.35</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -756,14 +756,19 @@
         const x = rect.left + rect.width / 2;
         const y = rect.top + rect.height / 2;
 
+        // Pre-events only — deliberately NO dispatched 'click': an untrusted
+        // click event on a checkbox/radio IS an activation and toggles it, so
+        // dispatching click AND calling .click() toggled controls twice
+        // (select → deselect; DIAG 1790000963923). Radios masked the bug
+        // (re-clicking a checked radio is a no-op); checkboxes flipped back.
+        // pointerdown/mousedown stay — Radix-style triggers open on those.
         const events = [
             new PointerEvent('pointerover', { bubbles: true, cancelable: true, clientX: x, clientY: y }),
             new MouseEvent('mouseover', { bubbles: true, cancelable: true, clientX: x, clientY: y }),
             new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, buttons: 1 }),
             new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 1 }),
             new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, buttons: 0 }),
-            new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 0 }),
-            new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 0 })
+            new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 0 })
         ];
 
         for (const ev of events) {
@@ -771,27 +776,16 @@
         }
 
         try {
-            // We previously avoided native click() on quiz options because it triggered auto-scroll
-            // on hidden carousel items. Since we now strict-filter offscreen items, native click()
-            // is safe and REQUIRED to actually toggle native checkboxes.
-            el.click();
-
-            // If the wrapper isn't a label, clicking it might not natively toggle the input
-            if (el.tagName !== 'LABEL' && el.tagName !== 'INPUT') {
-                const input = el.querySelector('input[type="checkbox"], input[type="radio"]');
-                if (input) input.click();
-            }
-
-            // React forcefully trigger
-            const reactKey = Object.keys(el).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
-            if (reactKey && el[reactKey]) {
-                const props = el[reactKey];
-                const mockEvent = { bubbles: true, cancelable: true, target: el, currentTarget: el, clientX: x, clientY: y, preventDefault: () => {}, stopPropagation: () => {} };
-                if (props.onClick) props.onClick(mockEvent);
-                else if (props.onPointerDown) props.onPointerDown(mockEvent);
-                else if (props.onMouseDown) props.onMouseDown(mockEvent);
-                else if (props.onChange) props.onChange(mockEvent);
-            }
+            // Exactly ONE activation. For a wrapper holding a real control,
+            // click the control itself — clicking the wrapper inside a <label>
+            // would forward a second click to the input (double-toggle again).
+            // el.click() reaches React's root-delegated listeners natively, so
+            // no manual __reactProps$ invocation (that fired onClick/onChange a
+            // third time with a stale target — same parity corruption).
+            const inner = (el.tagName !== 'INPUT' && el.tagName !== 'LABEL')
+                ? el.querySelector('input[type="checkbox"], input[type="radio"]')
+                : null;
+            (inner || el).click();
         } catch (e) {}
     }
 
