@@ -511,3 +511,22 @@ The previously exposed key must still be revoked and must not be reused. Create 
 3. Change parse failures to retry or pause instead of defaulting to option 1.
 4. Capture assessment-specific SCORM calls, especially `cmi.interactions.*`, to document how genuine quiz attempts are persisted.
 5. Keep suspend-data decoding diagnostic/read-only until unvisited lesson structures and assessment state are understood.
+
+### Silent-stall root cause + sorting adapter (v9.37, DIAG 1790014642688 — live-verified on C1256)
+
+The C1256 run sat on the lesson page after START: `state: running`, zero journal entries for 17+ min, `.page-wrap` 4032px at scrollTop 70, `continueBtn: null` (the button isn't mounted until lazy content loads), `sweep.armed: 0`. Every reachable priority produces at least one journaled line within a minute — total silence meant the tick **threw before reaching any status**.
+
+**Root cause:** a brace-scope bug in Priority E. `const playBtns` was declared inside `if (!hasUnlockedFwd)` but `for (const pb of playBtns)` sat *after* that block's closing `}` ? `ReferenceError: playBtns is not defined` every tick, killing the loop between the media section and Priority F (the sweep). Pages with a visible unlocked CONTINUE never entered `!hasUnlockedFwd`, which is why earlier runs survived — the C1256 lesson top (continue unmounted below the fold) was the first page to hit it. Confirmed live: the tick-wrap journaled `tick error: playBtns is not defined` on injection, and `node --check` passes because it's a runtime scoping error, not syntax.
+
+**Fixes:**
+- playBtns loop moved back inside the `if (!hasUnlockedFwd)` block (missing `}` restored).
+- Tick body extracted to `tickBody()` and wrapped in try/catch ? `reportTickError` journals each unique exception once (`tick error: msg @ frame`) and drives `stuckSince` so a persistent crash pauses via the 15 s idle watchdog instead of dying invisibly.
+- The `Delay Ns` branch is journal-filtered *and* used to reset `stuckSince` — a perpetually re-armed `nextActionTime` was indistinguishable from a dead script. Continuous delay now counts toward the 15 s watchdog; sweep steps reset `stuckSince` explicitly (a working sweep is progress, not idle).
+- `buildDiag` now reports `nextActionIn`, `stuckFor`, and the last 4 `runtimeErrors` (kind + message + source:line) — the three fields that separate "delay loop" from "thrown tick" in one DIAG.
+- `fwdCandidates` skips `#seed-panel` controls — the panel's `? START` button matches `isKnownForwardLabel('START')` and the tick self-claimed it in single-frame contexts.
+
+**Sorting adapter (new, `interactive-fullscreen/sorting`).** The sweep found a card-sort deck (`block-sorting-activity`: `.playing-card--draggable` cards dragged onto `.pile` zones, `deck__title` counts `N/5 Cards Correct`). The course model carries the answer key: `items[] {id,title,pileId}` + `piles[] {id,title}`, and **DOM card element ids equal model item ids** — deterministic, no AI. `_sortingKey` (itemId ? pile title) is collected by the same `quizDefs()` model walk. Priority E2 (inside `!hasUnlockedFwd`, before F): the active card is `.playing-card[aria-hidden="false"]`; it is dragged via `simulateDrag` onto the `.pile` whose `.pile__title` matches. Placed cards unmount from `.playing-card` entirely, so the selector always returns the next card. Per-card retries bounded at 4 via `sortRetries`.
+
+**Drag-vs-sweep race (found in live verification):** the first drag attempt missed — the F sweep scrolled the block mid-drag and the pointer-move target went stale. E2 now **pins the block into view** (`scrollTop` centered, `Positioning sorting block...`) before each drag and only fires when both card and pile are on-screen; the 2.5 s claim delay also blocks F from wandering mid-drag. After the fix all 5 cards sorted live (`5/5 Cards Correct`), the `completeBlock` divider unlocked, CONTINUE advanced to the next quiz card.
+
+Note: `SEED_UNKNOWN_IDLE` pauses via `applyState('paused')` — in single-frame injection tests the script pauses on its *own* incident postMessage (`window.top` === self). Real usage targets the wrapper frame, so this is an injection artifact, not a bug.

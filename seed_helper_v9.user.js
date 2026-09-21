@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.36
+// @version      9.37
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.36</span>
+            <span>🤖 Seed Helper v9.37</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1065,6 +1065,21 @@
         } catch (e) {}
         try {
             d.sweep = { armed: sweepArmed.size, reswept: sweepReswept.size };
+            // Timing fields distinguish the two silent-stall signatures:
+            // nextActionIn>0 = the delay branch is eating every tick;
+            // huge/zero with no journal = the tick throws before any status.
+            d.nextActionIn = Math.max(0, nextActionTime - Date.now());
+            d.stuckFor = stuckSince ? Date.now() - stuckSince : 0;
+        } catch (e) {}
+        // Surface captured runtime errors — an exception thrown inside the
+        // tick fires window.onerror but otherwise leaves no trace (the silent-
+        // stall signature of DIAG 1790014642688).
+        try {
+            if (runtimeErrors && runtimeErrors.length) {
+                d.errors = runtimeErrors.slice(-4).map(er => clipStr(
+                    (er && er.kind ? er.kind + ': ' : '') + ((er && er.message) || er) +
+                    (er && er.source ? ' @ ' + sanitizeIncidentUrl(er.source) + ':' + (er.line || '?') : ''), 200));
+            }
         } catch (e) {}
         return d;
     }
@@ -1231,6 +1246,7 @@
     const answerSrc     = {};   // questionId -> 'courseData'|'history'|'scorm'|'ai'
     const watchedMedia  = new Set();
     const mediaRetries  = {};
+    const sortRetries   = {};   // card-id -> drag attempts (bounded)
     const takeAgainRetries = {};
     const lastAttempt   = {};
     const unhandledSurfaces = new Set();
@@ -1419,6 +1435,7 @@
         isSolving = false;
         nextActionTime = 0;
         Object.keys(mediaRetries).forEach(k => delete mediaRetries[k]);
+        Object.keys(sortRetries).forEach(k => delete sortRetries[k]);
         Object.keys(takeAgainRetries).forEach(k => delete takeAgainRetries[k]);
         unhandledSurfaces.clear();
         terminalPages.clear();
@@ -1609,9 +1626,28 @@
     // Warm the course-model fetch now so quiz answer defs are resolved before
     // the solver needs them (the __fetchCourse path is async).
     try { quizDefs(); } catch(e) {}
-    setInterval(() => {
-        if (!isRunning()) return;
 
+    // Tick-body is wrapped so an exception can't die silently once a second —
+    // DIAG 1790014642688 ran "running" with zero journal output while diag
+    // snapshots stayed live: consistent with the body throwing before any
+    // sendStatus. reportTickError journals each unique failure once and lets
+    // the 15s idle watchdog still fire.
+    const tickErrSeen = new Set();
+    function reportTickError(e) {
+        const msg = String((e && e.message) || e || 'unknown');
+        const frame2 = String((e && e.stack) || '').split('\n')[1] || '';
+        const sig = msg + '|' + frame2;
+        if (!tickErrSeen.has(sig)) {
+            tickErrSeen.add(sig);
+            sendDebug('tick error: ' + msg.slice(0, 120) + (frame2 ? ' @ ' + frame2.trim().slice(0, 80) : ''));
+        }
+        const n = Date.now();
+        if (!stuckSince) stuckSince = n;
+        if (n - stuckSince >= 15000) reportUnknownIdle();
+    }
+
+    function tickBody() {
+        if (!isRunning()) return;
         const now = Date.now();
         // Refresh this frame's diag snapshot ~every 20s so a later DUMP/DIAG
         // always has near-current state even if frames die mid-broadcast.
@@ -1620,8 +1656,13 @@
             try { GM_setValue(diagKey, JSON.stringify(buildDiag())); } catch(e) {}
         }
         if (now < nextActionTime) {
-            stuckSince = 0;
+            // Delays are normal — but 'Delay Ns' is journal-filtered, so a
+            // perpetually re-armed nextActionTime is indistinguishable from a
+            // dead script (DIAG 1790014642688 signature). Watch it like any
+            // other stall: >15s of continuous delay reports an incident.
+            if (!stuckSince) stuckSince = now;
             sendDebug(isSolving ? 'Waiting for AI...' : `Delay ${Math.round((nextActionTime - now) / 1000)}s`);
+            if (now - stuckSince >= 15000) reportUnknownIdle();
             return;
         }
 
@@ -1979,6 +2020,9 @@
 
         document.querySelectorAll(fwdSelectors).forEach(el => {
             if (!isVisible(el)) return;
+            // Never treat our own panel controls as page navigation — the
+            // START button's label matches isKnownForwardLabel('START').
+            if (el.closest('#seed-panel, #seed-helper-root')) return;
             const t = (el.innerText || el.textContent || '').trim().toUpperCase();
             if (t === 'SUBMIT') return;
             // Intra-block carousel steppers belong to the interactive handler (C1).
@@ -2262,7 +2306,6 @@
                     nextActionTime = now + 7000;
                     return;
                 }
-            }
 
             // Play button with no <video> in its block — iframe/embed only.
             for (const pb of playBtns) {
@@ -2282,6 +2325,53 @@
                 nextActionTime = now + 2000;
                 return;
             }
+        }
+
+        // -- PRIORITY E2: Card-sort deck (interactive-fullscreen/sorting) ---
+        // Course model carries items[] {id,title,pileId} + piles[] {id,title};
+        // DOM card element ids equal model item ids. One card is active at a
+        // time (aria-hidden="false"); drag it onto the .pile whose title the
+        // model assigns. Bounded per-card retries, then the idle incident
+        // reports it like any other unsupported surface.
+        // The block pins itself into view before each drag — the F sweep
+        // scrolling mid-drag moved the target and the drop silently missed
+        // (Ethanol→Classic Vape, live test).
+        if (!hasUnlockedFwd) {
+            const sortBlock = Array.from(document.querySelectorAll('.block-sorting-activity'))
+                .find(b => b.querySelector('.playing-card, .deck__title'));
+            if (sortBlock) {
+                const deckT = ((sortBlock.querySelector('.deck__title') || {}).innerText || '').trim();
+                const mDone = deckT.match(/(\d+)\s*\/\s*(\d+)/);
+                const allCorrect = mDone && +mDone[1] >= +mDone[2] && +mDone[2] > 0;
+                const card = sortBlock.querySelector('.playing-card[aria-hidden="false"]');
+                if (!allCorrect && card && _sortingKey && _sortingKey[card.id]) {
+                    const pile = Array.from(sortBlock.querySelectorAll('.pile')).find(p => {
+                        const t = ((p.querySelector('.pile__title') || {}).innerText || '').trim();
+                        return t === _sortingKey[card.id];
+                    });
+                    if (pile) {
+                        const br = sortBlock.getBoundingClientRect();
+                        if (br.top < 0 || br.bottom > window.innerHeight) {
+                            const scroller = sortBlock.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]') || document.documentElement;
+                            scroller.scrollTop += (br.top + br.height / 2) - window.innerHeight / 2;
+                            sendStatus('Positioning sorting block...', '#f9e2af', true);
+                            nextActionTime = now + 800;
+                            return;
+                        }
+                        if (isVisible(card) && isVisible(pile)) {
+                            const att = sortRetries[card.id] || 0;
+                            if (att < 4) {
+                                sortRetries[card.id] = att + 1;
+                                sendStatus(`Sorting card: ${(card.innerText || '').trim().slice(0, 30)} → ${_sortingKey[card.id]}`, '#f9e2af', true);
+                                setTimeout(() => { try { simulateDrag(card, pile); } catch(e) {} }, 400);
+                                nextActionTime = now + 2500;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // ── PRIORITY F: Locked Continue Button Scroll ───
         if (!hasUnlockedFwd) {
@@ -2313,12 +2403,14 @@
                     }
                     sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
                     nextActionTime = now + 1500;
+                    stuckSince = 0; // a working sweep is progress, not idle
                     return;
                 }
                 if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 5) {
                     scroller.scrollTop += 250;
                     sendStatus('Reviewing page to unlock Continue...', '#f9e2af', true);
                     nextActionTime = now + 1500;
+                    stuckSince = 0;
                     return;
                 }
                 // Bottom reached but a gate is still locked: blocks above were
@@ -2329,6 +2421,7 @@
                     scroller.scrollTop = 0;
                     sendStatus('Re-reviewing page to unlock Continue...', '#f9e2af', true);
                     nextActionTime = now + 1500;
+                    stuckSince = 0;
                     return;
                 }
             }
@@ -2354,7 +2447,11 @@
             }
             sendStatus('Idle - nothing actionable found on this page.', '#bac2de', true);
         }
+    }
 
+    setInterval(() => {
+        try { tickBody(); }
+        catch (e) { try { reportTickError(e); } catch (_) {} }
     }, 1000);
 
 
@@ -3173,6 +3270,10 @@
     // correct_responses readback returns "" on this platform).
     let _quizDefs = null;
     let _cdFetchStarted = false;
+    // Sorting-block answer key: model item id -> pile title. Populated by the
+    // same model walk as quizDefs (shape confirmed live on C1256:
+    // {items:[{id,title,pileId}], piles:[{id,title}], variant:"sorting"}).
+    let _sortingKey = null;
     function quizDefs() {
         if (_quizDefs) return _quizDefs;
         _quizDefs = [];
@@ -3186,6 +3287,17 @@
                     // Matching defs keep correct pairings outside answers/correct
                     // (pairs[] or a matching-typed object — shape varies by build).
                     _quizDefs.push(o);
+                }
+            }
+            if (Array.isArray(o.items) && o.items.length && Array.isArray(o.piles) && o.piles.length
+                && o.items.every(it => it && it.id != null && it.pileId != null)
+                && o.piles.every(p => p && p.id != null && p.title != null)) {
+                if (!_sortingKey) _sortingKey = {};
+                const names = {};
+                for (const p of o.piles) names[String(p.id)] = String(p.title).replace(/<[^>]+>/g, '').trim();
+                for (const it of o.items) {
+                    const n = names[String(it.pileId)];
+                    if (it.id != null && n) _sortingKey[it.id] = n;
                 }
             }
             for (const k in o) walk(o[k]);
