@@ -565,3 +565,15 @@ v9.40 reached the quiz-match card correctly (`Matching L(6) R(6)`) but still ask
 - The `committed` gate no longer counts `[class*="matched"]` when the container holds `li.quiz-match__item--draggable` — a partial match is mid-solve, not a committed answer, so the card releases for bounded re-solve instead of skipping forever.
 
 **Residual risk:** `quizSolveFails>=4` still skips silently — if a card is truly unsolvable the sweep loops without an incident. Deliberately left: the bound prevents unbounded churn, and the sweep reports "Reviewing page" so the state is visible in DIAG.
+
+### Passed-quiz results screen swept forever → false Unknown idle (v9.42, incident 1790019031738)
+
+The Knowledge Check passed cleanly (`cmi: completed/passed/1 — course done`) at 19:27:39 — then the script kept ticking. The passed-report (Priority E) fires once via `quizPassedReported`; subsequent ticks fall to Priority F, which swept the results page (no forward nav — only TAKE AGAIN/EXIT) until the 15s watchdog emitted `Unknown idle` ~3min later. The header docs already promised "report completion and pause" — the pause was never implemented.
+
+**Fix:** `applyState('paused')` after the pass report. Results screens are terminal for the helper — user exits or NUKEs manually.
+
+### Auto-capture pipeline (v9.42)
+
+Incidents/diags now auto-POST to the existing local listener (`127.0.0.1:8765`, same channel as `/log`): `storeIncident` → `POST /incident`, DIAG/DUMP buttons → `POST /diag|sniff`. New `capture_server.js` writes them into `captures/` and serves `GET /latest` (newest file per kind). Silent no-op when the listener isn't running — behavior unchanged otherwise.
+
+**Workflow:** run `node capture_server.js` alongside the course → any stall lands in `captures/` automatically → "check the latest capture" instead of downloading + uploading files manually.

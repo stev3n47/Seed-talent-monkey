@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.41
+// @version       9.42
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.41</span>
+            <span>🤖 Seed Helper v9.42</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,12 +419,16 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.41', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.42', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
                 };
                 downloadJson('seed_' + (withEvents ? 'sniff' : 'diag') + '_' + Date.now() + '.json', payload);
+                try {
+                    GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/" + (withEvents ? 'sniff' : 'diag'),
+                        data: JSON.stringify(payload), headers: { "Content-Type": "application/json" } });
+                } catch (e3) {}
                 updateStatus((withEvents ? 'Dumped ' + sniffEntries.length + ' requests + ' : 'Diag: ') + journal.length + ' journal entries, ' + Object.keys(diags).length + ' frames.', '#94e2d5');
             }, 700);
         };
@@ -583,6 +587,12 @@
                 }));
                 latestIncident = safe;
                 if (incidentBtn) incidentBtn.style.display = 'inline-block';
+                // Pipeline: hand the incident to the local capture listener
+                // (capture_server.js) — silent no-op when it isn't running.
+                try {
+                    GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/incident",
+                        data: JSON.stringify(safe), headers: { "Content-Type": "application/json" } });
+                } catch (e2) {}
             } catch (e) {}
         }
 
@@ -2129,6 +2139,9 @@
             const msg = `✓ ${passedQuizMsg}${suffix} — course done, you can exit.`;
             sendStatus(msg, '#a6e3a1');
             try { window.top.postMessage({ type: 'SEED_QUIZ_PASSED', text: msg }, '*'); } catch(e) {}
+            // Terminal screen: only TAKE AGAIN/EXIT remain. Pause here —
+            // otherwise the sweep loops the results page into Unknown idle.
+            applyState('paused');
             return;
         }
 
