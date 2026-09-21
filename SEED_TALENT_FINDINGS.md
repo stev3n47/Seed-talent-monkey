@@ -435,6 +435,14 @@ v9.29 redesign — no done-set at all:
 - `sweepReswept` (per signature) allows exactly one return-to-top resweep when the bottom is reached but a gate is still locked — covers mid-page landings where upper blocks were never viewed.
 - Sequence verified by construction against the live package: arm → dwell 1.5s (top blocks register) → step 250px/1.5s → lazy controls mount mid-sweep and get clicked by C1 → bottom → resweep if still locked → Continue appears → forward nav.
 
+### Quiz stall — attempted-but-unanswered deadlock (v9.30, DIAG 1789994511996)
+
+Course: **C3552 "The Case for Chemohunting"** (second Rise package on the page alongside C1012 — both course iframes coexist; frame diag keys distinguish them). The quiz (`quizDefs:12` resolved via `__fetchCourse`) stalled at "What is a key differ…": `already attempted. Skipping...` repeated every second with no "Next question…" — the card showed SUBMIT + 4 options, nothing selected, no feedback label, no NEXT button.
+
+**Root cause:** `attempted.add(qid)` fires when a solve is *scheduled*, not when an answer is *committed*. Once a qid lands there, nothing short of the narrow A1 error-text path ever releases it. A submit click that never landed, or a Take Again pass that reset answers, leaves the question `attempted` + unanswered forever → skipped each tick → no NEXT exists → permanent stall. `quizSolveFails` release only fired on AI-solve failures, not on "answer never stuck."
+
+**Fix:** in `detectActiveQuiz`'s skip branch, an `attempted` card is now checked for a committed state — any `input:checked`, `[aria-checked=true]`, `[aria-pressed=true]`, `--selected`/`is-selected`/`matched`/`dropped` classes, a visible `.quiz-card__feedback-label`, or a non-empty text input. If the card is still unanswered AND no solve is pending for it (`qId !== activeSolveQId`), it's released from `attempted` for a re-solve, bounded by `quizSolveFails[qid] < 4` (cleared on Take Again, so retake passes legitimately re-solve every question). After 4 releases the question stays skipped and the idle watchdog reports it rather than looping.
+
 ## Credential security
 
 Version 9.06 no longer contains an OpenRouter key in source. The panel's `KEY` control stores or removes the replacement value through local userscript storage, and both quiz solving and summary generation stop safely when no key is configured.

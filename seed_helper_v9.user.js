@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version      9.29
+// @version      9.30
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.29</span>
+            <span>🤖 Seed Helper v9.30</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,7 +419,7 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.29', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.30', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
@@ -510,7 +510,7 @@
         function storeIncident(raw, fallbackType) {
             try {
                 const safe = {
-                    helperVersion: String((raw && raw.helperVersion) || '9.29').slice(0, 20),
+                    helperVersion: String((raw && raw.helperVersion) || '9.30').slice(0, 20),
                     capturedAt: String((raw && raw.capturedAt) || new Date().toISOString()).slice(0, 40),
                     type: String((raw && raw.type) || fallbackType || 'unknown').slice(0, 60),
                     engine: String((raw && raw.engine) || 'Unknown').slice(0, 40),
@@ -935,7 +935,7 @@
     // request/response bodies, headers, cookies, or stacks.
     function buildIncident(type, detection) {
         const incident = {
-            helperVersion: '9.29',
+            helperVersion: '9.30',
             capturedAt: new Date().toISOString(),
             type: clipStr(type, 60),
             engine: detectCourseEngine(),
@@ -1528,8 +1528,24 @@
         if (!qId) qId = 'unknown_' + Date.now();
 
         if (attemptedSet && attemptedSet.has(qId)) {
-            sendDebug(`detectActiveQuiz: Found submit button but quiz ${qId.substring(0, 20)} already attempted. Skipping...`);
-            continue;
+            // `attempted` only proves the solver was scheduled — the submit may
+            // never have landed, or a Take Again pass reset the card. If the
+            // card still shows unanswered (no selection, no feedback label),
+            // release it for a bounded re-solve instead of skipping forever.
+            const committed = container.querySelector(
+                'input:checked, [aria-checked="true"], [aria-pressed="true"], ' +
+                '[class*="--selected"], [class*="is-selected"], [class*="matched"], [class*="dropped"]'
+            ) || Array.from(container.querySelectorAll(
+                '.quiz-card__feedback-label, [class*="quiz-card__feedback"]'
+            )).some(el => isVisible(el))
+            || (() => { const ti = container.querySelector('input[type="text"], input.quiz-fill__input'); return ti && String(ti.value || '').trim().length > 0; })();
+            if (committed || qId === activeSolveQId || (quizSolveFails[qId] || 0) >= 4) {
+                sendDebug(`detectActiveQuiz: Found submit button but quiz ${qId.substring(0, 20)} already attempted. Skipping...`);
+                continue;
+            }
+            quizSolveFails[qId] = (quizSolveFails[qId] || 0) + 1;
+            attemptedSet.delete(qId);
+            sendDebug(`detectActiveQuiz: ${qId.substring(0, 20)} was attempted but is still unanswered — releasing for re-solve (${quizSolveFails[qId]}/4)`);
         }
 
         // Step 5: classify
