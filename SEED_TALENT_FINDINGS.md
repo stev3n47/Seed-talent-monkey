@@ -555,3 +555,13 @@ C1256 knowledge-check matching (`li.quiz-match__item--draggable` chevron terms �
 - Per-pair land verification + one retry + a final residual pass. A missed drop wedges the card at 5/6 (submit stays `--disabled` and the partial state counts as "committed" → permanent skip → infinite sweep). If items still refuse to land the question is released so the idle watchdog reports it honestly instead of looping forever. Drop targets are scrolled into the real scroller first (`ensureVis`) since the pointer hit-test resolves at viewport coords.
 
 **Verified live:** `Dragging 6 pairs` from courseData → `matching: L5 → R1 did not land — retrying` (exactly the wedge path) → `Matched! Submitting...` → `Advancing...` → next lesson, where the following MCQ solved via `Course-data answer hit`.
+
+### Empty piece-text under visibility:hidden → courseData miss → AI wedge (v9.41, DIAG 1790018288706)
+
+v9.40 reached the quiz-match card correctly (`Matching L(6) R(6)`) but still asked the AI: `getPieceText` reads `el.innerText`, which returns `""` for `visibility:hidden` items (lazy mount / mid-animation). All 6 term/descriptor texts normalized to `""` → `courseDataMatchingPairs` found no matches → `scormMatchingPairs` empty → AI → `AI parse fail` ×3 → `attempted` + partial `--matched` counted as `committed` → "already attempted. Skipping" + sweep forever. Live DOM: `computedStyle.visibility = "hidden"` on the li while `innerText=""` and `textContent` holds the text (plus svg title/desc noise).
+
+**Fix:**
+- `getPieceText` now reads `.quiz-match__item-content .fr-view` / `> span:last-child` via `textContent` (visibility-blind, skips svg noise) before the innerText fallback. Verified live: all 6 terms + 6 descriptors extracted under `visibility:hidden`.
+- The `committed` gate no longer counts `[class*="matched"]` when the container holds `li.quiz-match__item--draggable` — a partial match is mid-solve, not a committed answer, so the card releases for bounded re-solve instead of skipping forever.
+
+**Residual risk:** `quizSolveFails>=4` still skips silently — if a card is truly unsolvable the sweep loops without an incident. Deliberately left: the bound prevents unbounded churn, and the sweep reports "Reviewing page" so the state is visible in DIAG.

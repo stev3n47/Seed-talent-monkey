@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.40
+// @version       9.41
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -166,7 +166,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.40</span>
+            <span>🤖 Seed Helper v9.41</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -419,7 +419,7 @@
                 const journal = mergedJournal();
                 const diags = collectDiags();
                 const payload = {
-                    meta: { helperVersion: '9.40', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: { helperVersion: '9.41', runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
                     events: withEvents ? sniffEntries : undefined,
                     journal,
                     diags
@@ -1584,11 +1584,16 @@
             // never have landed, or a Take Again pass reset the card. If the
             // card still shows unanswered (no selection, no feedback label),
             // release it for a bounded re-solve instead of skipping forever.
+            // quiz-match marks each landed pair with --matched — a partial match
+            // is mid-solve, not committed. Only non-quiz-match containers treat
+            // a "matched" class as proof of a committed answer.
             const committed = container.querySelector(
                 'input:checked, [aria-checked="true"], [aria-pressed="true"], ' +
-                '[class*="--selected"], [class*="is-selected"], [class*="matched"], [class*="dropped"], ' +
+                '[class*="--selected"], [class*="is-selected"], [class*="dropped"], ' +
                 '[data-select-item="current"]:not([data-value=""])' // filled matching-dd row
-            ) || Array.from(container.querySelectorAll(
+            ) || (!container.querySelector('li.quiz-match__item--draggable')
+                  && container.querySelector('[class*="matched"]'))
+            || Array.from(container.querySelectorAll(
                 '.quiz-card__feedback-label, [class*="quiz-card__feedback"]'
             )).some(el => isVisible(el))
             || (() => { const ti = container.querySelector('input[type="text"], input.quiz-fill__input'); return ti && String(ti.value || '').trim().length > 0; })();
@@ -2844,7 +2849,13 @@
         const getPieceText = el => {
             if (!el || !el.querySelector) return '';
             const span = el.querySelector('.matching-interaction-piece-content span, [data-matching-interaction-piece-content-inline] span');
-            return span ? span.innerText.trim() : (el.innerText || '').replace(/Selectable item/gi, '').trim();
+            if (span) return span.innerText.trim();
+            // quiz-match: term/descriptor text lives in .quiz-match__item-content.
+            // li.innerText is "" while the item is visibility:hidden (lazy mount
+            // or mid-animation) — read textContent, which is visibility-blind.
+            const qc = el.querySelector('.quiz-match__item-content .fr-view, .quiz-match__item-content > span:last-child');
+            if (qc) return (qc.textContent || '').trim();
+            return (el.innerText || '').replace(/Selectable item/gi, '').trim();
         };
 
         // Read existing match state.
