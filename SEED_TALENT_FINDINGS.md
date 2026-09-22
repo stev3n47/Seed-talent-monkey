@@ -614,3 +614,13 @@ v9.45 treated `courses/outstanding` as authoritative; it actually returns `{"ite
 ### Frozen-scroller sweep masked the idle watchdog — 2min silent stall (v9.48, sniff 1790103306542)
 
 "ish - nj" opened via queue, SCORM frame mounted, then 2min of `Idle` with **no incident**. Cause: Priority F's scroll step does `scrollTop += 250` and unconditionally claims progress (`stuckSince = 0`). On a page whose scroller reports `scrollHeight > clientHeight` but can't actually move (frozen/transform-paged intro), the branch repeats forever — deduped status = invisible, watchdog permanently reset. Fix: measure `scrollTop` before/after; ≤0 movement counts toward `sweepStuck[sig]`, and after 6 no-ops the branch stops claiming so the 15s idle watchdog fires → incident → queue skip. `sweepStuck` clears in resetMemory.
+
+### Selected-but-unsubmitted quiz wedge + silent --active gate (v9.49, diag 1790103708936)
+
+Grön Arcana slide-deck Q2 ("Which Grön product is dreamy and introspective?"): solver picked option 1 (history cache hit), then `Completing interactive block` (page-down) fired mid-solve — the ~1.2-2s later `isVisible(submitBtn)` check failed post-scroll so **SUBMIT was never clicked**. Rise shows no error (never asked), so the card sat attempted+selected forever: empty-looking radios + enabled SUBMIT + stale `Correct` banner from a sibling card.
+
+**Bug A — silent skip:** `detectActiveQuiz`'s `--active` gate (`ownCard !== activeCard → continue`) emitted zero journal output — the answered feedback card kept `--active`, shadowing the live card's submit every tick. Fix: the gate now binds the submit's own card when it has live options and no feedback; skips (with a debug line) only when that card is resolved or option-less.
+
+**Bug B — committed pin:** `activeSolveQId` was set at solve-start but cleared only in failure paths — a finished solve pinned `qId === activeSolveQId` → treated as committed forever. Now cleared at all four solver exits, and `submitClickedAt[qid]` records real submit clicks.
+
+**Bug C — no unsubmitted rescue:** a card with a selection but no feedback and a live submit now gets SUBMIT re-clicked directly (4 tries, 4s grace vs the solver's own click), then falls through to the idle watchdog → incident → queue skip.

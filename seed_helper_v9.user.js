@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.48
+// @version       9.49
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.48';
+    const HELPER_VERSION = '9.49';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
 
     function getOpenRouterApiKey() {
@@ -262,7 +262,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.48</span>
+            <span>🤖 Seed Helper v9.49</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1395,6 +1395,8 @@
     const watchedMedia  = new Set();
     const mediaRetries  = {};
     const sortRetries   = {};   // card-id -> drag attempts (bounded)
+    const submitRetries = {};   // qid -> re-submit clicks (bounded)
+    const submitClickedAt = {}; // qid -> last submit click ts (grace window)
     const takeAgainRetries = {};
     const lastAttempt   = {};
     const unhandledSurfaces = new Set();
@@ -1585,6 +1587,8 @@
         nextActionTime = 0;
         Object.keys(mediaRetries).forEach(k => delete mediaRetries[k]);
         Object.keys(sortRetries).forEach(k => delete sortRetries[k]);
+        Object.keys(submitRetries).forEach(k => delete submitRetries[k]);
+        Object.keys(submitClickedAt).forEach(k => delete submitClickedAt[k]);
         Object.keys(takeAgainRetries).forEach(k => delete takeAgainRetries[k]);
         unhandledSurfaces.clear();
         terminalPages.clear();
@@ -1629,8 +1633,21 @@
             let container;
             if (activeCard) {
                 if (ownCard && ownCard !== activeCard
-                    && ownCard.matches('.quiz-card, [class*="quiz-card"], .quiz-item__card, .quiz-question')) continue;
-                container = activeCard;
+                    && ownCard.matches('.quiz-card, [class*="quiz-card"], .quiz-item__card, .quiz-question')) {
+                    // --active can linger on a resolved card (feedback showing)
+                    // while a sibling card carries the next live question —
+                    // skipping that submit starves it with zero journal output
+                    // (Grön Arcana slide-deck, diag 1790103708936). Only skip
+                    // when this card is itself resolved or has no live options.
+                    const resolved = !!ownCard.querySelector('.quiz-card__feedback, [class*="feedback--active"], .quiz-feedback');
+                    const liveOpt = ownCard.querySelector('input[type="radio"], input[type="checkbox"], [class*="-option-wrap"], .quiz-card__interactive li, .quiz-card__interactive label');
+                    if (resolved || !liveOpt) {
+                        sendDebug('detectActiveQuiz: submit skipped — belongs to a non-active card');
+                        continue;
+                    }
+                    sendDebug('detectActiveQuiz: --active marker sits on a resolved card — binding submit to its own card');
+                }
+                container = ownCard && ownCard !== activeCard ? ownCard : activeCard;
             } else {
                 container = ownCard
                          || submitBtn.closest('.lesson-main, .page-wrap')
@@ -1727,6 +1744,33 @@
             // quiz-match marks each landed pair with --matched — a partial match
             // is mid-solve, not committed. Only non-quiz-match containers treat
             // a "matched" class as proof of a committed answer.
+            const fbShown = Array.from(container.querySelectorAll(
+                '.quiz-card__feedback-label, [class*="quiz-card__feedback"]'
+            )).some(el => isVisible(el));
+            const picked = container.querySelector(
+                'input:checked, [aria-checked="true"], [class*="--selected"], [class*="is-selected"]'
+            );
+            if (!fbShown && picked) {
+                // Selection registered but the submit click never landed (the
+                // solver skips it when isVisible fails — e.g. C1's page-down
+                // scroll moved the card — and Rise shows no error because it
+                // was never asked). Re-click submit directly, bounded, with a
+                // grace window so we don't race the solver's own click.
+                if (Date.now() - (submitClickedAt[qId] || 0) > 4000) {
+                    const n = (submitRetries[qId] || 0) + 1;
+                    submitRetries[qId] = n;
+                    if (n <= 4) {
+                        sendDebug(`detectActiveQuiz: ${qId.substring(0, 20)} selected but unsubmitted — clicking SUBMIT (${n}/4)`);
+                        try { submitBtn.scrollIntoView({ block: 'center' }); } catch(e) {}
+                        setTimeout(() => { try { simulateHumanClick(submitBtn); } catch(e) {} }, 300 + Math.random() * 300);
+                        submitClickedAt[qId] = Date.now();
+                        nextActionTime = Date.now() + 2000;
+                    } else if (n === 5) {
+                        sendDebug(`detectActiveQuiz: ${qId.substring(0, 20)} still unsubmitted after 4 re-clicks — leaving for the idle watchdog`);
+                    }
+                }
+                continue;
+            }
             const committed = container.querySelector(
                 'input:checked, [aria-checked="true"], [aria-pressed="true"], ' +
                 '[class*="--selected"], [class*="is-selected"], [class*="dropped"], ' +
@@ -2902,8 +2946,15 @@
 
                                 if (AUTO_SUBMIT_QUIZ) {
                                     await sleep(1200 + Math.random() * 800);
-                                    if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+                                    if (submitBtn && isVisible(submitBtn)) {
+                                        simulateHumanClick(submitBtn);
+                                        submitClickedAt[questionId] = Date.now();
+                                    }
                                 }
+                                // Solve is finished — leaving activeSolveQId pinned
+                                // marks the card "committed" forever even when the
+                                // submit never landed (Grön slide-deck stall).
+                                if (activeSolveQId === questionId) activeSolveQId = null;
                                 isSolving = false;
                             } catch (err) {
                                 sendDebug('ERROR in applyNums: ' + err.toString());
@@ -3035,8 +3086,12 @@
 
             if (AUTO_SUBMIT_QUIZ) {
                 await sleep(1200 + Math.random() * 800);
-                if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+                if (submitBtn && isVisible(submitBtn)) {
+                    simulateHumanClick(submitBtn);
+                    submitClickedAt[questionId] = Date.now();
+                }
             }
+            if (activeSolveQId === questionId) activeSolveQId = null;
             isSolving = false;
         };
 
@@ -3271,7 +3326,11 @@
 
                 sendStatus('Matched! Submitting...', '#a6e3a1');
                 await sleep(1200 + Math.random() * 800);
-                if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+                if (submitBtn && isVisible(submitBtn)) {
+                    simulateHumanClick(submitBtn);
+                    submitClickedAt[questionId] = Date.now();
+                }
+                if (activeSolveQId === questionId) activeSolveQId = null;
                 isSolving = false;
         };
 
@@ -3408,7 +3467,11 @@
 
             sendStatus('Matched! Submitting...', '#a6e3a1');
             await sleep(1200 + Math.random() * 800);
-            if (submitBtn && isVisible(submitBtn)) simulateHumanClick(submitBtn);
+            if (submitBtn && isVisible(submitBtn)) {
+                simulateHumanClick(submitBtn);
+                submitClickedAt[questionId] = Date.now();
+            }
+            if (activeSolveQId === questionId) activeSolveQId = null;
             isSolving = false;
         };
 
