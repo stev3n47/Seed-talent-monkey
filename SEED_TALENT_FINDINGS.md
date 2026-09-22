@@ -624,3 +624,7 @@ Grön Arcana slide-deck Q2 ("Which Grön product is dreamy and introspective?"):
 **Bug B — committed pin:** `activeSolveQId` was set at solve-start but cleared only in failure paths — a finished solve pinned `qId === activeSolveQId` → treated as committed forever. Now cleared at all four solver exits, and `submitClickedAt[qid]` records real submit clicks.
 
 **Bug C — no unsubmitted rescue:** a card with a selection but no feedback and a live submit now gets SUBMIT re-clicked directly (4 tries, 4s grace vs the solver's own click), then falls through to the idle watchdog → incident → queue skip.
+
+### Replay-button loop starved lower priorities (v9.50, incident 19-20-58)
+
+C10539 (Belushi's Farm): quiz submitted correctly (radio disabled+checked), checkboxes done — but the page sat mid-scroll with 2 unflipped flashcards and `sweep.armed:0`. Cause: the playBtn selector `[aria-label*="Play" i]` / `button[class*="play"]` matches VJS's post-finish **"Replay"** control — each click restarted the finished video ("Video finished" logged 4x), and every claim returned before Priority F could sweep. Fix: filter replay/again-labeled buttons out of playBtns — replaying a watched video is never a completion requirement. Also confirmed working-as-designed: `external-embed` correctly detected a cross-origin paperform.co survey (C11271) → incident → queue skip; it can't be auto-filled.
