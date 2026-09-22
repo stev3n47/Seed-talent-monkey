@@ -602,3 +602,11 @@ New QUEUE panel button runs every outstanding course back-to-back: catalog → d
 ### Queue picker used the wrong endpoint — instant "complete" (v9.46, sniff 1790101837887)
 
 v9.45 treated `courses/outstanding` as authoritative; it actually returns `{"items":[]}` (a different concept) → empty pick → "Queue complete — 0 done". The real catalog source is `courses/by-category`: `[{id, name, courses:[{id(uuid), name, progress, status, canStartCourse, userTestResults}]}]`. Picker now walks by-category for objects carrying uuid `id` + progress/status fields, skipping `status:Completed`/`progress>=100`/`canStartCourse:false`. If the catalog body was never captured, the queue reloads the page once to let the sniffer catch the fetch, then falls back to DOM anchors + pager.
+
+### Queue live run — two stalls (v9.47, sniff 1790102351248 + incident 18:38:15)
+
+**Grön Arcana (skipped, not completed):** slide-deck lesson (`lesson-one-page-slides`, step 4/5). Quiz answered Correct → step 5 dot + next-btn stayed `disabled until content is completed`. The only enabled control was `lesson-one-page-slides__page-down-btn` ("Scroll page down") — the step had unviewed content below the fold *inside the slide*, and nothing clicked it → 15s idle → queue skip. Fix: `page-down-btn` added to C1 (clicks until the slide bottoms out → step completes → dots unlock).
+
+**Black Label flip-flop:** `flashcard-side-flip__btn[id$="-front-flip-btn"]` had no `--flipped` guard. Rise renders both card faces with backface-visibility — the flipped card's front button keeps a non-zero rect → isVisible passes → re-click flips it back → loop (user scroll broke it manually). Fix: selector scoped under `.flashcard:not(.flashcard--flipped)` + container-level guard skipping any `flashcard*` ancestor with flipped/viewed/complete class or a `", Viewed"`-style aria-label.
+
+**Queue mechanics verified:** picked real incomplete courses by name (`Queue: opening Grön Arcana…`, `Black Label - NJ`), queue-skip on incident worked, tried-map advanced to next course. Note: skipped courses reset on re-arm (new QUEUE press) — Grön will retry next run.

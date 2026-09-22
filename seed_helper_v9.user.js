@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.46
+// @version       9.47
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.46';
+    const HELPER_VERSION = '9.47';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
 
     function getOpenRouterApiKey() {
@@ -262,7 +262,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.46</span>
+            <span>🤖 Seed Helper v9.47</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -2351,11 +2351,12 @@
                 'button.block-carousel__control--next, ' +
                 'button.labeled-graphic-marker, ' +
                 'button.flashcard__turn, ' +
-                'button.flashcard-side-flip__btn[id$="-front-flip-btn"], ' +
+                '.flashcard:not(.flashcard--flipped) button.flashcard-side-flip__btn[id$="-front-flip-btn"], ' +
                 '.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn, ' +
                 'button.block-flashcards-slider__arrow--next, ' +
                 'button.process-counter__btn, ' +
                 'button.blocks-slide-indicator__button, ' +
+                'button.lesson-one-page-slides__page-down-btn, ' +
                 'button.blocks-gallery-grid__image, ' +
                 'button.interactive-grid__item, ' +
                 'label.block-list__option, ' +
@@ -2385,6 +2386,12 @@
                 // Rise marks viewed tabs/markers with a --visited/--complete/--seen
                 // suffix — re-clicking them would cycle the tab strip forever.
                 if (/--(visited|complete|seen)\b/.test(el.className)) continue;
+                // Flipped flashcards keep both faces mounted with backface-
+                // visibility — the front button still has a rect, so isVisible
+                // can't tell and re-clicks flip the card BACK (Black Label
+                // flip-flop loop). Guard at the container, all variants.
+                const fc = el.closest('.flashcard, [class*="flashcard"]');
+                if (fc && (/flipped|viewed|complete/i.test(fc.className) || /,\s*(viewed|flipped|seen)\s*$/i.test(fc.getAttribute('aria-label') || ''))) continue;
                 if (el.classList.contains('labeled-graphic-marker') && /,\s*Viewed\s*$/i.test(el.getAttribute('aria-label') || '')) continue;
 
                 // Skip checkboxes that are already checked
