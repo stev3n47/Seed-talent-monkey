@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.50
+// @version       9.51
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.50';
+    const HELPER_VERSION = '9.51';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
 
     function getOpenRouterApiKey() {
@@ -262,7 +262,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.50</span>
+            <span>🤖 Seed Helper v9.51</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -3259,6 +3259,7 @@
                     if (sc && sc !== document.documentElement) sc.scrollTop += dy;
                     else window.scrollBy(0, dy);
                 };
+                let unmatched = 0;
                 for (const [, ls, rs] of pairs) {
                     let L = col1[+ls - 1], R = col2[+rs - 1];
                     // quiz-match remounts/re-sorts items after each drop — held
@@ -3283,15 +3284,51 @@
                         continue;
                     }
 
-                    ensureVis(R); // synthetic pointerdown hits L off-screen anyway
-                    await simulateDrag(L, R);
-                    await sleep(450 + Math.random() * 400);
+                    const isQm = L.className && String(L.className).includes('quiz-match__item');
+                    if (!isQm) {
+                        // matching-interaction pieces are <button>s — HTML5 drag
+                        // registers nothing (Rise pairs via click-select →
+                        // click-target, aria-pressed + "Matched with X"). Some
+                        // courses also mount the grips on the RIGHT column, so
+                        // L→R drags hit non-draggables (Rove, "Please answer"
+                        // loop). Verify via getCurrentMatchText on both sides.
+                        const want = (targetText || '').toLowerCase();
+                        const lTxt = (col1Texts[+ls - 1] || '').toLowerCase();
+                        const landed = () => {
+                            const onL = getCurrentMatchText(L), onR = getCurrentMatchText(R);
+                            return (onL && onL.toLowerCase() === want) || (onR && onR.toLowerCase() === lTxt);
+                        };
+                        const canDrag = el => !!(el && (el.getAttribute('draggable') === 'true' ||
+                            el.closest('li.draggable, [draggable="true"]') ||
+                            el.querySelector('[data-rbd-drag-handle-draggable-id]')));
+                        const [src, tgt] = (canDrag(R) && !canDrag(L)) ? [R, L] : [L, R];
+                        if (canDrag(src)) {
+                            ensureVis(tgt);
+                            await simulateDrag(src, tgt);
+                            await sleep(500);
+                        }
+                        if (!landed()) {
+                            // A wrong pre-match toggles off first, then pair.
+                            if (getCurrentMatchText(L)) { simulateHumanClick(L); await sleep(400); }
+                            simulateHumanClick(src); await sleep(350);
+                            simulateHumanClick(tgt); await sleep(600);
+                        }
+                        if (!landed()) {
+                            simulateHumanClick(tgt); await sleep(350);
+                            simulateHumanClick(src); await sleep(600);
+                        }
+                        if (!landed()) unmatched++;
+                    } else {
+                        ensureVis(R); // synthetic pointerdown hits L off-screen anyway
+                        await simulateDrag(L, R);
+                        await sleep(450 + Math.random() * 400);
+                    }
 
                     // quiz-match marks a landed drop with --matched on the li.
                     // A missed drop wedges the card: submit stays disabled and
                     // the partial state still counts as "committed". Verify each
                     // pair landed; re-resolve stale refs and retry once if not.
-                    if (L.className && String(L.className).includes('quiz-match__item')) {
+                    if (isQm) {
                         const cur = Array.from(document.querySelectorAll('li.quiz-match__item--draggable'))
                             .find(el => scormNorm(getPieceText(el)) === scormNorm(col1Texts[+ls - 1] || ''));
                         if (!(cur && String(cur.className).includes('matched'))) {
@@ -3329,6 +3366,14 @@
                         releaseFailedQuestion('matching: ' + stuck + ' quiz-match item(s) would not land.', questionId);
                         return;
                     }
+                }
+
+                // Non-quiz-match: pairs that never landed would submit to a
+                // "Please answer" error loop — release for bounded re-solve
+                // instead of submitting garbage (Rove voltage-match card).
+                if (unmatched) {
+                    releaseFailedQuestion('matching: ' + unmatched + ' pair(s) would not land.', questionId);
+                    return;
                 }
 
                 sendStatus('Matched! Submitting...', '#a6e3a1');

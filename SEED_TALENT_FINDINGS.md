@@ -628,3 +628,11 @@ Grön Arcana slide-deck Q2 ("Which Grön product is dreamy and introspective?"):
 ### Replay-button loop starved lower priorities (v9.50, incident 19-20-58)
 
 C10539 (Belushi's Farm): quiz submitted correctly (radio disabled+checked), checkboxes done — but the page sat mid-scroll with 2 unflipped flashcards and `sweep.armed:0`. Cause: the playBtn selector `[aria-label*="Play" i]` / `button[class*="play"]` matches VJS's post-finish **"Replay"** control — each click restarted the finished video ("Video finished" logged 4x), and every claim returned before Priority F could sweep. Fix: filter replay/again-labeled buttons out of playBtns — replaying a watched video is never a completion requirement. Also confirmed working-as-designed: `external-embed` correctly detected a cross-origin paperform.co survey (C11271) → incident → queue skip; it can't be auto-filled.
+
+### matching-interaction uses click-pair, not drag — "Please answer" loop (v9.51, diag 1790105617975)
+
+Rove Q4/10 "Match the following voltage settings and colors": solver found the pairs via courseData and "dragged" them — but matching-interaction pieces are `<button>` elements (paired via aria-pressed + hidden "Matched with X" span), so simulateDrag's HTML5 DragEvent sequence registered **zero** pairs → submit → "Please answer the question to continue" → release → re-solve → loop (also each cycle took minutes under timer throttling).
+
+Also the grip/socket direction is **reversed** on this card — ⋮⋮ grips on the RIGHT column — so even real drags aimed at non-draggables.
+
+Fix (solveMatchingQuestion pair loop, non-quiz-match only): `canDrag` detects a real drag source (`draggable`/`li.draggable`/`data-rbd-drag-handle`) and drags that side onto the other; otherwise click-pairs via simulateHumanClick (single activation — safe on buttons), trying both click orders. Every pair is verified through getCurrentMatchText on BOTH elements; unlanded pairs count into `unmatched` → releaseFailedQuestion (bounded re-solve) instead of submitting to the "Please answer" loop. quiz-match path untouched.
