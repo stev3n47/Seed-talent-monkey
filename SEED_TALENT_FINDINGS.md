@@ -598,3 +598,7 @@ New QUEUE panel button runs every outstanding course back-to-back: catalog → d
 - Queue-aware exits: SEED_QUIZ_PASSED → done++ → catalog; SEED_UNKNOWN_IDLE / SEED_UNHANDLED / SEED_TERMINAL_PAGE / SEED_PAUSE_REQ → mark tried, skip, catalog (each course's incident still stores + POSTs to the listener).
 - Watchdogs: detail page with no SCORM iframe for 90s → skip (idle watchdog doesn't cover app pages — `isLikelyCourseContentFrame` false). Catalog pager: ≤40 next-page clicks in DOM-fallback mode. Queue auto-disarms after 12h.
 - Latent bug fixed en route: `applyState('paused')` in tickBody's passed-quiz branch was a ReferenceError (panel-scoped, invisible to module-level tickBody) — replaced with `state = 'paused'`; the SEED_QUIZ_PASSED message already carried the real pause.
+
+### Queue picker used the wrong endpoint — instant "complete" (v9.46, sniff 1790101837887)
+
+v9.45 treated `courses/outstanding` as authoritative; it actually returns `{"items":[]}` (a different concept) → empty pick → "Queue complete — 0 done". The real catalog source is `courses/by-category`: `[{id, name, courses:[{id(uuid), name, progress, status, canStartCourse, userTestResults}]}]`. Picker now walks by-category for objects carrying uuid `id` + progress/status fields, skipping `status:Completed`/`progress>=100`/`canStartCourse:false`. If the catalog body was never captured, the queue reloads the page once to let the sniffer catch the fetch, then falls back to DOM anchors + pager.

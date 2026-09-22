@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.45
+// @version       9.46
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.45';
+    const HELPER_VERSION = '9.46';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
 
     function getOpenRouterApiKey() {
@@ -143,36 +143,41 @@
     }
 
     // Catalog API bodies captured by the page sniffer (memory only, never
-    // journaled or persisted). courses/outstanding is authoritative — once
-    // captured, an empty list means the catalog is complete.
+    // journaled or persisted). Real shape (sniff 1790101837887):
+    //   by-category → [{id,name,courses:[{id(uuid),name,progress,status,
+    //                  canStartCourse,userTestResults:[{progress,status}]}]}]
+    //   outstanding → {"items":[]} — NOT the incomplete list, ignore it.
     const courseApiCache = {};
-    function courseIdsFromCache() {
-        const src = 'outstanding' in courseApiCache ? courseApiCache.outstanding : courseApiCache['by-category'];
+    const COURSE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    function courseEntriesFromCache() {
+        const src = courseApiCache['by-category'];
         if (!src) return [];
         let json;
         try { json = JSON.parse(src); } catch(e) { return []; }
         const out = [], seen = new Set();
-        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         (function walk(n) {
             if (!n || typeof n !== 'object') return;
             if (Array.isArray(n)) return n.forEach(walk);
-            for (const v of Object.values(n)) {
-                if (v && typeof v === 'object') { walk(v); continue; }
-                if (typeof v !== 'string') continue;
-                const m = v.match(/\/course\/([0-9a-f-]{36})/i);
-                const id = m ? m[1] : (uuid.test(v) ? v : null);
-                if (id && !seen.has(id)) { seen.add(id); out.push(id); }
+            // Course objects carry a uuid id AND progress/status fields;
+            // nested entities (incentives, categories) don't.
+            if (typeof n.id === 'string' && COURSE_UUID.test(n.id) &&
+                ('progress' in n || 'status' in n || 'canStartCourse' in n) && !seen.has(n.id)) {
+                seen.add(n.id);
+                out.push({ id: n.id, name: String(n.name || '').slice(0, 60),
+                           progress: n.progress, status: String(n.status || ''),
+                           canStart: n.canStartCourse !== false });
             }
+            Object.values(n).forEach(walk);
         })(json);
         return out;
     }
 
     function pickNextCourse(q) {
         const tried = (q && q.tried) || {};
-        for (const id of courseIdsFromCache()) {
-            if (tried[id]) continue;
-            const a = document.querySelector('a[href*="/course/' + id + '"]');
-            return { id, href: '/course/' + id, label: id.slice(0, 8), anchor: a };
+        for (const c of courseEntriesFromCache()) {
+            if (tried[c.id] || c.progress >= 100 || /completed/i.test(c.status) || !c.canStart) continue;
+            const a = document.querySelector('a[href*="/course/' + c.id + '"]');
+            return { id: c.id, href: '/course/' + c.id, label: c.name || c.id.slice(0, 8), anchor: a };
         }
         // DOM fallback when the API body was never captured
         for (const a of document.querySelectorAll('a[href*="/course/"]')) {
@@ -257,7 +262,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.45</span>
+            <span>🤖 Seed Helper v9.46</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -363,7 +368,7 @@
                 updateStatus('Queue stopped.', '#f9e2af');
                 return;
             }
-            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0 });
+            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false });
             applyState('running');
             updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
             if (!/seedtalent\.com$/.test(location.hostname) || !/^\/courses/.test(location.pathname)) {
@@ -1846,7 +1851,7 @@
             const next = pickNextCourse(q);
             if (next) {
                 setQueue({ current: next.id });
-                sendStatus('Queue: opening course ' + next.label + '…', '#a6e3a1');
+                sendStatus('Queue: opening ' + next.label + '…', '#a6e3a1');
                 nextActionTime = now + 3000;
                 setTimeout(() => {
                     try { if (next.anchor) simulateHumanClick(next.anchor); else location.assign(next.href); }
@@ -1854,13 +1859,24 @@
                 }, 400);
                 return;
             }
-            // Pager only applies in DOM-fallback mode — once courses/outstanding
-            // was captured, an empty pick is authoritative: the catalog is done.
-            if (!('outstanding' in courseApiCache) && (q.pages || 0) < 40 && advanceCatalogPage()) {
-                setQueue({ pages: (q.pages || 0) + 1 });
-                sendStatus('Queue: next catalog page…', '#f9e2af');
-                nextActionTime = now + 2500;
-                return;
+            const apiReady = 'by-category' in courseApiCache;
+            if (!apiReady) {
+                // The app's catalog fetch may have raced the sniffer or this
+                // page was reached by SPA nav — reload once to capture it.
+                if (!q.reloaded) {
+                    setQueue({ reloaded: true });
+                    sendStatus('Queue: catalog feed not captured — reloading…', '#f9e2af');
+                    nextActionTime = now + 1500;
+                    setTimeout(() => { try { location.reload(); } catch(e) {} }, 800);
+                    return;
+                }
+                // DOM-fallback mode: walk the pager.
+                if ((q.pages || 0) < 40 && advanceCatalogPage()) {
+                    setQueue({ pages: (q.pages || 0) + 1 });
+                    sendStatus('Queue: next catalog page…', '#f9e2af');
+                    nextActionTime = now + 2500;
+                    return;
+                }
             }
             setQueue({ active: false });
             state = 'paused';
