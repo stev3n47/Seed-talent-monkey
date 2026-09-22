@@ -587,3 +587,14 @@ Also fixed: `helperVersion` was hardcoded `'9.33'` in `buildIncident`/`storeInci
 ### C1282 tabs ping-pong — EXCELLENCE↔INNOVATION, IMPACT starved (v9.44)
 
 v9.43 claimed the tabs block but looped between the first two tabs forever: with INNOVATION active, EXCELLENCE was the first non-active tab in DOM order and got re-clicked every tick. Rise tab strips expose **no viewed marker** (`--after-active` is positional only), so the marker skip can't disambiguate. **Fix:** sequential forward-only progression for `blocks-tabs__header-item` and `tab-nav__item` — only the tab immediately after the active one is clickable (wraps to index 0 when the last is active), same model as the slide-dots guard.
+
+### Queue mode — catalog autopilot (v9.45)
+
+New QUEUE panel button runs every outstanding course back-to-back: catalog → detail → completion → back to catalog → next. Mechanics:
+
+- `seed_queue` GM flag (`{active, tried, current, done, pages}`) persists across navigation; `whenBodyReady` auto-`applyState('running')` when armed so each new page self-starts. Iframes pick up 'running' via the existing 1.5s SEED_STATE_QUERY poll.
+- Course list comes from the app's own API: the page sniffer now relays `api.seedtalent.com/api/v1/courses/*` response bodies to the top frame even with SNIFF off (200k cap for these endpoints; catalog bodies are truncated to 2k inside sniff dumps). `courses/outstanding` is authoritative (empty = done); `by-category` + DOM anchors are fallbacks.
+- `pickNextCourse` prefers API uuids, skips `tried` ids; DOM fallback filters cards containing 'revisit'/'100%'.
+- Queue-aware exits: SEED_QUIZ_PASSED → done++ → catalog; SEED_UNKNOWN_IDLE / SEED_UNHANDLED / SEED_TERMINAL_PAGE / SEED_PAUSE_REQ → mark tried, skip, catalog (each course's incident still stores + POSTs to the listener).
+- Watchdogs: detail page with no SCORM iframe for 90s → skip (idle watchdog doesn't cover app pages — `isLikelyCourseContentFrame` false). Catalog pager: ≤40 next-page clicks in DOM-fallback mode. Queue auto-disarms after 12h.
+- Latent bug fixed en route: `applyState('paused')` in tickBody's passed-quiz branch was a ReferenceError (panel-scoped, invisible to module-level tickBody) — replaced with `state = 'paused'`; the SEED_QUIZ_PASSED message already carried the real pause.

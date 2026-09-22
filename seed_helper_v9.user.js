@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.44
+// @version       9.45
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.44';
+    const HELPER_VERSION = '9.45';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
 
     function getOpenRouterApiKey() {
@@ -123,6 +123,96 @@
     const runtimeErrors = [];
     const idleIncidents = new Set();
 
+    // ── Course-queue state (GM-persisted so it survives SPA/full navigations) ──
+    // { active, started, tried:{courseId:1}, current, done, pages }
+    const QUEUE_KEY = 'seed_queue';
+    function queueState() {
+        try { const q = JSON.parse(GM_getValue(QUEUE_KEY, '{}')); return (q && typeof q === 'object') ? q : {}; }
+        catch(e) { return {}; }
+    }
+    function setQueue(patch) {
+        const q = Object.assign(queueState(), patch);
+        try { GM_setValue(QUEUE_KEY, JSON.stringify(q)); } catch(e) {}
+        return q;
+    }
+    function queueActive() {
+        const q = queueState();
+        if (!q.active) return false;
+        if (Date.now() - (q.started || 0) > 12 * 3600 * 1000) { setQueue({ active: false }); return false; }
+        return true;
+    }
+
+    // Catalog API bodies captured by the page sniffer (memory only, never
+    // journaled or persisted). courses/outstanding is authoritative — once
+    // captured, an empty list means the catalog is complete.
+    const courseApiCache = {};
+    function courseIdsFromCache() {
+        const src = 'outstanding' in courseApiCache ? courseApiCache.outstanding : courseApiCache['by-category'];
+        if (!src) return [];
+        let json;
+        try { json = JSON.parse(src); } catch(e) { return []; }
+        const out = [], seen = new Set();
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        (function walk(n) {
+            if (!n || typeof n !== 'object') return;
+            if (Array.isArray(n)) return n.forEach(walk);
+            for (const v of Object.values(n)) {
+                if (v && typeof v === 'object') { walk(v); continue; }
+                if (typeof v !== 'string') continue;
+                const m = v.match(/\/course\/([0-9a-f-]{36})/i);
+                const id = m ? m[1] : (uuid.test(v) ? v : null);
+                if (id && !seen.has(id)) { seen.add(id); out.push(id); }
+            }
+        })(json);
+        return out;
+    }
+
+    function pickNextCourse(q) {
+        const tried = (q && q.tried) || {};
+        for (const id of courseIdsFromCache()) {
+            if (tried[id]) continue;
+            const a = document.querySelector('a[href*="/course/' + id + '"]');
+            return { id, href: '/course/' + id, label: id.slice(0, 8), anchor: a };
+        }
+        // DOM fallback when the API body was never captured
+        for (const a of document.querySelectorAll('a[href*="/course/"]')) {
+            const m = (a.getAttribute('href') || '').match(/\/course\/([0-9a-f-]{36})/i);
+            if (!m || tried[m[1]]) continue;
+            const card = a.closest('[class*="card"], [class*="Card"], li, article') || a;
+            if (/revisit|100\s*%/i.test((card.innerText || '').slice(0, 400))) continue;
+            const label = (card.innerText || '').trim().slice(0, 40);
+            return { id: m[1], href: a.href, label: label || m[1].slice(0, 8), anchor: a };
+        }
+        return null;
+    }
+
+    function advanceCatalogPage() {
+        const btn = Array.from(document.querySelectorAll('button, a[role="button"]')).find(b => {
+            if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+            const lbl = (b.getAttribute('aria-label') || '') + '|' + (b.innerText || '').trim();
+            return /next\s*page/i.test(lbl) || /\|\s*[›»→]\s*$/.test(lbl);
+        });
+        if (!btn) return false;
+        simulateHumanClick(btn);
+        return true;
+    }
+
+    let queueDetailSince = 0; // detail-page watchdog start (queue mode)
+
+    // Queue return-to-catalog. Module scope so tickBody can call it too —
+    // q.current can be null if the course was entered manually, so fall back
+    // to the URL and a failing course can't re-enter forever.
+    function queueReturn(reason) {
+        const q = queueState();
+        const tried = q.tried || {};
+        const cur = q.current || (location.pathname.match(/\/course\/([0-9a-f-]{36})/i) || [])[1];
+        if (cur) tried[cur] = true;
+        queueDetailSince = 0;
+        setQueue({ tried, current: null });
+        sendStatus((reason || 'Back to catalog') + ' — queue continues.', '#a6e3a1');
+        setTimeout(() => { try { location.assign('https://app.seedtalent.com/courses'); } catch(e) { location.href = 'https://app.seedtalent.com/courses'; } }, 2500);
+    }
+
     function pushBounded(list, item, max = 40) {
         list.push(item);
         if (list.length > max) list.splice(0, list.length - max);
@@ -167,7 +257,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.44</span>
+            <span>🤖 Seed Helper v9.45</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -177,6 +267,7 @@
                 <button id="st-dump" style="background:#313244;color:#94e2d5;border:1px solid #94e2d5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download captured requests as JSON">⬇ DUMP</button>
                 <button id="st-diag" style="background:#313244;color:#f5c2e7;border:1px solid #f5c2e7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download cross-frame state snapshot + action journal (no sniff needed)">⬇ DIAG</button>
                 <button id="st-incident" style="display:none;background:#313244;color:#fab387;border:1px solid #fab387;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download the latest sanitized stall report">⬇ INCIDENT</button>
+                <button id="st-queue" style="background:#313244;color:#b4befe;border:1px solid #b4befe;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Queue mode: auto-run every outstanding course in the catalog, back-to-back">📋 QUEUE</button>
                 <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped"></span>
             </div>
           </div>
@@ -259,8 +350,30 @@
         startBtn.addEventListener('click',  () => { try { GM_setValue('seed_runid', String(Date.now())); } catch(e) {} applyState('running'); updateStatus('Running...', '#a6e3a1'); });
         pauseBtn.addEventListener('click',  () => applyState('paused'));
         resumeBtn.addEventListener('click', () => { applyState('running'); updateStatus('Resumed.', '#a6e3a1'); });
-        stopBtn.addEventListener('click',   () => { applyState('stopped'); broadcastReset(); });
-        stop2Btn.addEventListener('click',  () => { applyState('stopped'); broadcastReset(); });
+        stopBtn.addEventListener('click',   () => { setQueue({ active: false }); applyState('stopped'); broadcastReset(); });
+        stop2Btn.addEventListener('click',  () => { setQueue({ active: false }); applyState('stopped'); broadcastReset(); });
+
+        // Queue mode: run every outstanding course back-to-back. The flag
+        // persists in GM storage so navigation auto-resumes the engine.
+        const queueBtn = document.getElementById('st-queue');
+        queueBtn.addEventListener('click', () => {
+            if (queueActive()) {
+                setQueue({ active: false });
+                applyState('paused');
+                updateStatus('Queue stopped.', '#f9e2af');
+                return;
+            }
+            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0 });
+            applyState('running');
+            updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
+            if (!/seedtalent\.com$/.test(location.hostname) || !/^\/courses/.test(location.pathname)) {
+                try { location.assign('https://app.seedtalent.com/courses'); } catch(e) { location.href = 'https://app.seedtalent.com/courses'; }
+            }
+        });
+        // Queue survives navigation: auto-resume the engine on the next page.
+        try {
+            if (queueActive()) setTimeout(() => { if (state === 'stopped') applyState('running'); }, 1500);
+        } catch(e) {}
 
         // Draggable panel logic
         const panel = document.getElementById('seed-panel');
@@ -479,6 +592,7 @@
                 const ev = d.evidence || {};
                 const evText = [ev.frame, ev.tag, ev.text, ev.cls, ev.src]
                     .map(x => String(x || '')).filter(Boolean).join(' | ').slice(0, 200);
+                if (queueActive()) { queueReturn('Skipped course — ' + label + ' needs an adapter'); return; }
                 applyState('paused');
                 updateStatus(`Paused — ${label} needs an adapter. Capture a screenshot and SNIFF/DUMP.`, '#f38ba8');
                 const dbg = document.getElementById('st-debug');
@@ -488,6 +602,7 @@
                 storeIncident(e.data.incident, 'terminal-page');
                 const ev = (e.data.detection && e.data.detection.evidence) || {};
                 const evText = [ev.frame, ev.title].map(x => String(x || '')).filter(Boolean).join(' | ').slice(0, 200);
+                if (queueActive()) { queueReturn('Course exit page — moving on'); return; }
                 applyState('paused');
                 updateStatus('Paused — course exit/Bye page detected. Reload the course before retrying START.', '#f38ba8');
                 const dbg = document.getElementById('st-debug');
@@ -495,6 +610,7 @@
             }
             if (e.data.type === 'SEED_UNKNOWN_IDLE') {
                 storeIncident(e.data.incident, 'unknown-idle');
+                if (queueActive()) { queueReturn('Skipped course — unknown-idle incident'); return; }
                 applyState('paused');
                 updateStatus('Paused — no supported action found. Download INCIDENT before using NUKE or leaving the course.', '#f38ba8');
                 const dbg = document.getElementById('st-debug');
@@ -502,10 +618,16 @@
                 if (dbg) dbg.innerText = `unknown-idle: ${String(fr).slice(0, 200)}`;
             }
             if (e.data.type === 'SEED_PAUSE_REQ') {
+                if (queueActive()) { queueReturn('Skipped course — needs an OpenRouter key'); return; }
                 applyState('paused');
                 updateStatus('Paused — set an OpenRouter key with KEY, then press RESUME.', '#f38ba8');
             }
             if (e.data.type === 'SEED_QUIZ_PASSED') {
+                if (queueActive()) {
+                    setQueue({ done: (queueState().done || 0) + 1 });
+                    queueReturn('Course done ✓');
+                    return;
+                }
                 applyState('paused');
                 updateStatus(String(e.data.text || '✓ Quiz passed — course done, you can exit.').slice(0, 200), '#a6e3a1');
             }
@@ -1715,6 +1837,55 @@
             return;
         }
 
+        // ── PRIORITY Q: course queue (catalog autopilot) ─────────────────
+        // On /courses with the queue armed, open the next untried course and
+        // let navigation carry the engine forward. applyState is panel-scoped
+        // and invisible here — `state = 'paused'` is the in-scope equivalent.
+        if (window === window.top && queueActive() && /seedtalent\.com$/.test(location.hostname) && /^\/courses/.test(location.pathname)) {
+            const q = queueState();
+            const next = pickNextCourse(q);
+            if (next) {
+                setQueue({ current: next.id });
+                sendStatus('Queue: opening course ' + next.label + '…', '#a6e3a1');
+                nextActionTime = now + 3000;
+                setTimeout(() => {
+                    try { if (next.anchor) simulateHumanClick(next.anchor); else location.assign(next.href); }
+                    catch(e) { try { location.href = next.href; } catch(_) {} }
+                }, 400);
+                return;
+            }
+            // Pager only applies in DOM-fallback mode — once courses/outstanding
+            // was captured, an empty pick is authoritative: the catalog is done.
+            if (!('outstanding' in courseApiCache) && (q.pages || 0) < 40 && advanceCatalogPage()) {
+                setQueue({ pages: (q.pages || 0) + 1 });
+                sendStatus('Queue: next catalog page…', '#f9e2af');
+                nextActionTime = now + 2500;
+                return;
+            }
+            setQueue({ active: false });
+            state = 'paused';
+            const skipped = Math.max(0, Object.keys(q.tried || {}).length - (q.done || 0));
+            sendStatus('Queue complete — ' + (q.done || 0) + ' done' + (skipped ? ', ' + skipped + ' skipped (see captures)' : '') + '.', '#a6e3a1');
+            return;
+        }
+
+        // Detail-page watchdog: queue navigated here but no SCORM content
+        // iframe mounted (bogus id, removed course, failed embed). The idle
+        // watchdog is gated on course-content frames, so without this a dead
+        // detail page stalls the queue silently.
+        if (window === window.top && queueActive() && /seedtalent\.com$/.test(location.hostname) && /^\/course\//.test(location.pathname)) {
+            const scormUp = document.querySelector('iframe[src*="scormdriver"], iframe[src*="scormcontent"], iframe[src*="cloudfront"], iframe[src*="scorm"]');
+            if (scormUp) { queueDetailSince = 0; }
+            else {
+                if (!queueDetailSince) queueDetailSince = now;
+                if (now - queueDetailSince > 90000) {
+                    queueDetailSince = 0;
+                    queueReturn('Course content never loaded — skipping');
+                    return;
+                }
+            }
+        }
+
         // ── TRACK FEEDBACK RESULTS ─────────────────────────────
         const fbContainers = Array.from(document.querySelectorAll('.quiz-card__feedback, [class*="feedback--active"], .quiz-card__feedback-label, .quiz-feedback'));
         for (const fbContainer of fbContainers) {
@@ -2142,7 +2313,10 @@
             try { window.top.postMessage({ type: 'SEED_QUIZ_PASSED', text: msg }, '*'); } catch(e) {}
             // Terminal screen: only TAKE AGAIN/EXIT remain. Pause here —
             // otherwise the sweep loops the results page into Unknown idle.
-            applyState('paused');
+            // applyState is panel-scoped and invisible to tickBody (threw
+            // ReferenceError); the module `state` var + SEED_QUIZ_PASSED
+            // message carry the pause to the top frame.
+            state = 'paused';
             return;
         }
 
@@ -3702,7 +3876,10 @@
                 const entry = { frame: location.href, method: method, url: String(url), status: resp.status,
                                 reqBody: reqBody ? String(reqBody).slice(0, 40000) : null, respBody: null };
                 if (ct.indexOf('json') > -1 || ct.indexOf('text') > -1 || ct.indexOf('xml') > -1) {
-                    entry.respBody = (await clone.text()).slice(0, 40000);
+                    // Catalog responses can exceed 40k (100+ courses) — queue
+                    // mode parses them, so give those endpoints a wider cap.
+                    const cap = /\/api\/v1\/courses\//.test(String(url)) ? 200000 : 40000;
+                    entry.respBody = (await clone.text()).slice(0, cap);
                 }
                 window.postMessage({ type: 'SEED_SNIFF_ENTRY', entry: entry }, '*');
             } catch(e) {}
@@ -3718,9 +3895,10 @@
             const meta = this.__sm, xhr = this;
             if (meta) xhr.addEventListener('loadend', function() {
                 try {
+                    const cap = /\/api\/v1\/courses\//.test(String(meta.u)) ? 200000 : 40000;
                     let rb = null;
-                    if (!xhr.responseType || xhr.responseType === 'text') rb = String(xhr.responseText).slice(0, 40000);
-                    else if (xhr.responseType === 'json') rb = JSON.stringify(xhr.response).slice(0, 40000);
+                    if (!xhr.responseType || xhr.responseType === 'text') rb = String(xhr.responseText).slice(0, cap);
+                    else if (xhr.responseType === 'json') rb = JSON.stringify(xhr.response).slice(0, cap);
                     window.postMessage({ type: 'SEED_SNIFF_ENTRY', entry: {
                         frame: location.href, method: meta.m, url: String(meta.u), status: xhr.status,
                         reqBody: b ? String(b).slice(0, 40000) : null, respBody: rb
@@ -3796,7 +3974,7 @@
                 try { f.contentWindow.postMessage({ type: 'SEED_DIAG_REQ' }, '*'); } catch(_) {}
             });
         }
-        if (e.data.type === 'SEED_SNIFF_ENTRY' && sniffOn) {
+        if (e.data.type === 'SEED_SNIFF_ENTRY' && (sniffOn || (e.data.entry && /api\.seedtalent\.com\/api\/v1\/courses\//.test(String(e.data.entry.url || ''))))) {
             try { window.top.postMessage({ type: 'SEED_SNIFF_AGG', entry: e.data.entry }, '*'); } catch(_) {}
         }
     });
@@ -3808,6 +3986,15 @@
             if (!e.data || e.data.type !== 'SEED_SNIFF_AGG') return;
             const en = e.data.entry;
             if (!en || STATIC_RE.test(en.url)) return;
+            // Catalog feed for queue mode: cache the courses/* body keyed by
+            // endpoint tail, kept out of the sniff log when the sniffer is off.
+            const cm = String(en.url).match(/api\.seedtalent\.com\/api\/v1\/courses\/([^?]+)/);
+            if (cm) {
+                try { courseApiCache[cm[1]] = en.respBody; } catch(e2) {}
+                if (!sniffOn) return;
+                // Keep catalog bulk out of the sniff dump — presence + head is enough.
+                if (en.respBody && en.respBody.length > 2000) en.respBody = en.respBody.slice(0, 2000) + '…[truncated]';
+            }
             sniffEntries.push(en);
             if (sniffEntries.length > 2000) sniffEntries.shift();
             sendDebug('[SNIFF] ' + en.method + ' ' + en.status + ' ' + String(en.url).slice(0, 110));
