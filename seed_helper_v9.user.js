@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.52
+// @version       9.53
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
 // @match        *://d1b20t6ufgwz51.cloudfront.net/*
 // @match        *://*.articulate.com/*
+// @match        *://*.paperform.co/*
 // @run-at       document-start
 // @allFrames    true
 // @grant        GM_xmlhttpRequest
@@ -19,8 +20,9 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.52';
+    const HELPER_VERSION = '9.53';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
+    const PROFILE_KEY = 'seed_form_profile';
 
     function getOpenRouterApiKey() {
         return String(GM_getValue(OPENROUTER_KEY_STORAGE, '') || '').trim();
@@ -262,11 +264,12 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.52</span>
+            <span>🤖 Seed Helper v9.53</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
                 <button id="st-key" style="background:#313244;color:#cba6f7;border:1px solid #cba6f7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Set or remove the local OpenRouter API key">KEY</button>
+                <button id="st-info" style="background:#313244;color:#f2d5cf;border:1px solid #f2d5cf;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Raffle/giveaway entry details — used to fill external entry forms">👤 INFO</button>
                 <button id="st-logs" style="background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📊 LOGS</button>
                 <button id="st-sniff" style="background:#313244;color:#89dceb;border:1px solid #89dceb;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Record network traffic (find the completion API)">📡 SNIFF</button>
                 <button id="st-dump" style="background:#313244;color:#94e2d5;border:1px solid #94e2d5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download captured requests as JSON">⬇ DUMP</button>
@@ -425,6 +428,24 @@
                 GM_setValue(OPENROUTER_KEY_STORAGE, value);
                 updateStatus('OpenRouter key saved locally.', '#a6e3a1');
             }
+        });
+
+        document.getElementById('st-info').addEventListener('click', () => {
+            const cur = getProfile();
+            const defs = [
+                ['name', 'Full name'], ['email', 'Email'], ['phone', 'Phone'],
+                ['store', 'Store / dispensary'], ['address', 'Street address'],
+                ['city', 'City'], ['state', 'State'], ['zip', 'ZIP code'],
+                ['dob', 'Date of birth (MM/DD/YYYY)'], ['instagram', 'Instagram / social handle'],
+            ];
+            const next = {};
+            for (const [k, lbl] of defs) {
+                const v = prompt(lbl + ' (leave blank to skip):', cur[k] || '');
+                if (v === null) return;
+                if (v.trim()) next[k] = v.trim();
+            }
+            GM_setValue(PROFILE_KEY, JSON.stringify(next));
+            updateStatus('Raffle profile saved — ' + Object.keys(next).length + ' field(s).', '#a6e3a1');
         });
 
         document.getElementById('st-summary').addEventListener('click', () => {
@@ -1026,6 +1047,169 @@
             .some(d => host === d || host.endsWith('.' + d));
     }
 
+    // =========================================================
+    // RAFFLE / GIVEAWAY EMBED FILLER (paperform.co)
+    //
+    // Giveaway lessons embed a cross-origin paperform.co iframe. With
+    // @match on paperform.co the script also runs INSIDE that frame:
+    // the child fills fields from the stored profile (INFO button),
+    // submits, and postMessages SEED_RAFFLE_DONE/FAIL to the parent
+    // Rise frame. The parent gives the child a 90s grace window before
+    // falling back to the normal external-embed incident path.
+    // =========================================================
+    const RAFFLE_HOST_RE = /(^|\.)paperform\.co$/i;
+    const raffleDoneHosts = new Set();
+    const raffleFailHosts = new Set();
+    let raffleNeedProfile = false;
+    let raffleSrc = '', raffleDeadline = 0;
+    let raffleSubmitted = false, raffleFailSent = false;
+    let raffleProfNagAt = 0, raffleSubmitAt = 0, raffleSubmitTries = 0;
+
+    function getProfile() {
+        try { const p = JSON.parse(GM_getValue(PROFILE_KEY, '{}')); return (p && typeof p === 'object') ? p : {}; } catch (e) { return {}; }
+    }
+    function isRaffleFrame() { return RAFFLE_HOST_RE.test(location.hostname || ''); }
+    function hostOf(src) { try { return new URL(src, location.href).hostname.toLowerCase(); } catch (e) { return ''; } }
+    function rafflePost(type) { try { window.parent.postMessage({ type, host: location.hostname }, '*'); } catch (e) {} }
+
+    const RAFFLE_FIELD_MAP = [
+        [/e-?mail/i, 'email'],
+        [/phone|mobile|cell|telephone|\btel\b/i, 'phone'],
+        [/first.?name|given/i, 'firstName'],
+        [/last.?name|surname|family/i, 'lastName'],
+        [/\bname\b/i, 'name'],
+        [/store|dispensar|retail|company|organiz|business|employer|work/i, 'store'],
+        [/street|address/i, 'address'],
+        [/city|town/i, 'city'],
+        [/state|province|region/i, 'state'],
+        [/zip|postal/i, 'zip'],
+        [/birth|d\.?o\.?b|\bage\b|born/i, 'dob'],
+        [/insta|social|handle|tiktok|twitter/i, 'instagram'],
+    ];
+
+    function raffleFieldLabel(el) {
+        let t = [el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.name, el.id]
+            .map(x => String(x || '')).join(' ');
+        try {
+            const lab = el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+            if (lab) t += ' ' + lab.innerText;
+            const wrap = el.closest('label, [class*="field"], [class*="question"], .form-group, li');
+            if (wrap) t += ' ' + String(wrap.innerText || '').slice(0, 160);
+        } catch (e) {}
+        return t;
+    }
+
+    function raffleValueFor(el) {
+        const label = raffleFieldLabel(el), p = getProfile();
+        for (const [re, key] of RAFFLE_FIELD_MAP) {
+            if (!re.test(label)) continue;
+            if (key === 'firstName') return (p.firstName || (p.name || '').trim().split(/\s+/)[0] || '');
+            if (key === 'lastName') { const w = (p.name || '').trim().split(/\s+/); return p.lastName || (w.length > 1 ? w[w.length - 1] : ''); }
+            return p[key] || '';
+        }
+        return '';
+    }
+
+    function setNativeValue(el, val) {
+        try {
+            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+                : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) desc.set.call(el, val); else el.value = val;
+        } catch (e) { try { el.value = val; } catch (e2) {} }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+    }
+
+    function toIsoDate(v) {
+        const m = String(v).match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+        if (!m) return v;
+        let y = m[3];
+        if (y.length === 2) y = (+y > 30 ? '19' : '20') + y;
+        return y + '-' + m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0');
+    }
+
+    // Runs inside the paperform iframe, on the main 1s tick.
+    function raffleTick(now) {
+        if (raffleSubmitted) { sendStatus('Raffle entry submitted ✓', '#a6e3a1', true); return; }
+        const bodyTxt = String(document.body && document.body.innerText || '').slice(0, 4000);
+        if (/thank you|you'?re entered|entry (received|submitted|confirmed)|submission (received|successful)|successfully (submitted|entered)/i.test(bodyTxt)) {
+            raffleSubmitted = true;
+            rafflePost('SEED_RAFFLE_DONE');
+            sendStatus('Raffle entry submitted ✓', '#a6e3a1', true);
+            return;
+        }
+        const p = getProfile();
+        if (!p.name && !p.email) {
+            if (now - raffleProfNagAt > 10000) { raffleProfNagAt = now; rafflePost('SEED_RAFFLE_NEEDS_PROFILE'); }
+            sendStatus('Raffle form — set your details via the 👤 INFO button in the panel', '#f9e2af', true);
+            return;
+        }
+        const fields = Array.from(document.querySelectorAll('input, textarea, select'))
+            .filter(el => isVisible(el) && !el.disabled && !el.readOnly);
+        for (const el of fields) {
+            const type = String(el.type || '').toLowerCase();
+            if (type === 'checkbox' || type === 'radio') {
+                if (!el.checked && /agree|certif|confirm|consent|terms|accept|\b21\b|age|opt.?in|subscribe/i.test(raffleFieldLabel(el))) {
+                    simulateHumanClick(el);
+                    sendDebug('Raffle: checked consent — ' + raffleFieldLabel(el).trim().slice(0, 60));
+                }
+                continue;
+            }
+            if (['hidden', 'submit', 'button', 'file', 'password'].includes(type)) continue;
+            if (String(el.value || '').trim()) continue;
+            const v = raffleValueFor(el);
+            if (v) {
+                setNativeValue(el, type === 'date' ? toIsoDate(v) : v);
+                sendDebug('Raffle: filled — ' + raffleFieldLabel(el).trim().slice(0, 60));
+            }
+        }
+        const actionBtn = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
+            .find(b => isVisible(b) && /submit|send|enter|join|sign ?up|claim|next|continue|done|finish/i.test(
+                String(b.innerText || b.value || b.getAttribute('aria-label') || '').trim()));
+        if (actionBtn && now - raffleSubmitAt > 4000 && raffleSubmitTries < 12) {
+            raffleSubmitAt = now; raffleSubmitTries++;
+            sendStatus('Raffle: submitting entry…', '#a6e3a1', true);
+            simulateHumanClick(actionBtn);
+        } else if (!actionBtn) {
+            sendStatus('Raffle: filling fields…', '#f9e2af', true);
+        }
+        if (raffleSubmitTries >= 12 && !raffleFailSent) {
+            raffleFailSent = true;
+            rafflePost('SEED_RAFFLE_FAIL');
+            sendStatus('Raffle: submit failed after retries — needs manual review', '#f38ba8', true);
+        }
+    }
+
+    // Parent (Rise content frame) side: hold the external-embed incident
+    // while the child fills; bound the grace window so it can't starve
+    // the watchdog like the frozen-sweep bug did.
+    function handleRaffleEmbed(unhandled, now) {
+        const host = hostOf(unhandled.evidence && unhandled.evidence.src);
+        if (!host || !RAFFLE_HOST_RE.test(host)) return false;
+        if (raffleDoneHosts.has(host)) {
+            unhandledSurfaces.add(unhandled.signature);
+            stuckSince = 0;
+            sendStatus('Raffle entry submitted — continuing…', '#a6e3a1', true);
+            return true;
+        }
+        if (raffleFailHosts.has(host)) return false;
+        if (raffleSrc !== host) { raffleSrc = host; raffleDeadline = now + 90000; }
+        if (now >= raffleDeadline) { raffleSrc = ''; raffleDeadline = 0; return false; }
+        sendStatus(raffleNeedProfile
+            ? 'Raffle entry form — set details via 👤 INFO in the panel…'
+            : 'Raffle entry form — filling automatically…', '#f9e2af', true);
+        return true;
+    }
+
+    window.addEventListener('message', (e) => {
+        if (!e.data) return;
+        if (e.data.type === 'SEED_RAFFLE_DONE' && e.data.host) raffleDoneHosts.add(String(e.data.host));
+        if (e.data.type === 'SEED_RAFFLE_FAIL' && e.data.host) raffleFailHosts.add(String(e.data.host));
+        if (e.data.type === 'SEED_RAFFLE_NEEDS_PROFILE') raffleNeedProfile = true;
+    });
+
     // Lighter than isVisible: validation surfaces may legitimately have
     // pointer-events:none while still being rendered on screen.
     function isRenderedForIncident(el) {
@@ -1598,6 +1782,9 @@
         passedQuizMsg = '';
         quizPassedReported = false;
         stuckSince = 0;
+        raffleSrc = '';
+        raffleDeadline = 0;
+        raffleNeedProfile = false;
     }
 
     // =========================================================
@@ -1884,6 +2071,9 @@
             lastDiagWrite = now;
             try { GM_setValue(diagKey, JSON.stringify(buildDiag())); } catch(e) {}
         }
+        // Raffle/giveaway embeds (paperform.co) run their own filler — the
+        // course engine has no business inside the form frame.
+        if (isRaffleFrame()) { raffleTick(now); return; }
         if (now < nextActionTime) {
             // Delays are normal — but 'Delay Ns' is journal-filtered, so a
             // perpetually re-armed nextActionTime is indistinguishable from a
@@ -2790,6 +2980,7 @@
             // handlers and page transitions get first chance.
             if (now - stuckSince >= 5000) {
                 const unhandled = detectUnhandledAdapter();
+                if (unhandled && unhandled.kind === 'external-embed' && handleRaffleEmbed(unhandled, now)) return;
                 if (unhandled && reportUnhandledAdapter(unhandled)) return;
             }
             // Recognized adapters win first; any other real stall pauses by 15s.
