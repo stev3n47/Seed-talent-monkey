@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.53
+// @version       9.54
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.53';
+    const HELPER_VERSION = '9.54';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -264,7 +264,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.53</span>
+            <span>🤖 Seed Helper v9.54</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -3379,7 +3379,7 @@
         //   aria-pressed="true" + class "matching-interaction-piece--matched"
         //   AND a visually-hidden span: "Matched with <span>X</span>"
         const getCurrentMatchText = btn => {
-            const spans = Array.from(btn.querySelectorAll('span.visually-hidden-always'));
+            const spans = Array.from(btn.querySelectorAll('span.visually-hidden-always, span.visually-hidden, [class*="visually-hidden"]'));
             for (const s of spans) {
                 const raw = (s.innerText || s.textContent || '').trim();
                 if (raw.toLowerCase().startsWith('matched with')) {
@@ -3496,36 +3496,42 @@
                     if (!isQm) {
                         // matching-interaction pieces are <button>s — HTML5 drag
                         // registers nothing (Rise pairs via click-select →
-                        // click-target, aria-pressed + "Matched with X"). Some
-                        // courses also mount the grips on the RIGHT column, so
-                        // L→R drags hit non-draggables (Rove, "Please answer"
-                        // loop). Verify via getCurrentMatchText on both sides.
+                        // click-target, aria-pressed + "Matched with X"). Worse,
+                        // simulateDrag's pointerdown on an rbd drag handle puts
+                        // the piece in a pending-drag state that swallows the
+                        // follow-up pairing clicks (C11613: drag+click both
+                        // failed, "8 pair(s) would not land"). Click-pair FIRST
+                        // with plain el.click() — no pointer pre-events — then
+                        // escalate to full simulateHumanClick; try both orders.
                         const want = (targetText || '').toLowerCase();
                         const lTxt = (col1Texts[+ls - 1] || '').toLowerCase();
+                        const matchedMark = el => {
+                            if (!el) return false;
+                            if (el.getAttribute('aria-pressed') === 'true' &&
+                                String(el.className || '').includes('--matched')) return true;
+                            const li = el.closest('li, [class*="matching-interaction-item"]');
+                            return !!(li && String(li.className || '').includes('--matched'));
+                        };
                         const landed = () => {
                             const onL = getCurrentMatchText(L), onR = getCurrentMatchText(R);
-                            return (onL && onL.toLowerCase() === want) || (onR && onR.toLowerCase() === lTxt);
+                            if ((onL && onL.toLowerCase() === want) || (onR && onR.toLowerCase() === lTxt)) return true;
+                            return matchedMark(L) && matchedMark(R);
                         };
-                        const canDrag = el => !!(el && (el.getAttribute('draggable') === 'true' ||
-                            el.closest('li.draggable, [draggable="true"]') ||
-                            el.querySelector('[data-rbd-drag-handle-draggable-id]')));
-                        const [src, tgt] = (canDrag(R) && !canDrag(L)) ? [R, L] : [L, R];
-                        if (canDrag(src)) {
-                            ensureVis(tgt);
-                            await simulateDrag(src, tgt);
-                            await sleep(500);
-                        }
+                        const plainClick = async (a, b) => {
+                            try { a.click(); } catch (e) {}
+                            await sleep(320);
+                            try { b.click(); } catch (e) {}
+                            await sleep(550);
+                        };
+                        if (getCurrentMatchText(L)) { simulateHumanClick(L); await sleep(400); }
+                        if (!landed()) await plainClick(L, R);
+                        if (!landed()) await plainClick(R, L);
+                        if (!landed()) { simulateHumanClick(L); await sleep(350); simulateHumanClick(R); await sleep(600); }
+                        if (!landed()) { simulateHumanClick(R); await sleep(350); simulateHumanClick(L); await sleep(600); }
                         if (!landed()) {
-                            // A wrong pre-match toggles off first, then pair.
-                            if (getCurrentMatchText(L)) { simulateHumanClick(L); await sleep(400); }
-                            simulateHumanClick(src); await sleep(350);
-                            simulateHumanClick(tgt); await sleep(600);
+                            unmatched++;
+                            sendDebug('matching: pair did not land — ' + lTxt.slice(0, 40) + ' ↔ ' + want.slice(0, 40));
                         }
-                        if (!landed()) {
-                            simulateHumanClick(tgt); await sleep(350);
-                            simulateHumanClick(src); await sleep(600);
-                        }
-                        if (!landed()) unmatched++;
                     } else {
                         ensureVis(R); // synthetic pointerdown hits L off-screen anyway
                         await simulateDrag(L, R);

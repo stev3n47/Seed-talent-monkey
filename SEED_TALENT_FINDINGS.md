@@ -649,3 +649,12 @@ Giveaway lessons (Rove Ice Packs, OCB Survey, Old Pal Survey, Grön Halloween) e
 
 - **Child frame** (`raffleTick` on the main tick): fills fields from the `seed_form_profile` GM value — set once via the new **👤 INFO** panel button (name, email, phone, store, address, city, state, zip, DOB, instagram; nothing hardcoded). Label→field mapping via aria-label/placeholder/name/id/wrapper text keywords. React-safe `setNativeValue` (prototype setter + input/change/blur). Consent checkboxes (agree/certify/21+/terms) auto-checked. Submits via the action button, bounded at 12 clicks ≥4s apart (covers multi-page Next chains), success detected via thank-you/entered text → `SEED_RAFFLE_DONE` postMessage to parent.
 - **Parent frame** (`handleRaffleEmbed`): intercepts the `external-embed` detection for paperform hosts — holds the incident for a 90s grace window, then falls back to the normal incident path on FAIL/timeout. On DONE the signature is marked handled and `stuckSince` resets (real progress). No-profile case nags via `SEED_RAFFLE_NEEDS_PROFILE` — the profile can be entered live mid-run since the child re-reads GM storage every tick.
+
+### matching-interaction: drag-then-click poisons the pair clicks (v9.54, diag 1790174075987)
+
+C11613 "Click and drag each intention to the correct flavor" looped ~5min: `Dragging 8 pairs` → 87s → `8 pair(s) would not land` → release → re-solve. Two compounding causes:
+
+1. `simulateDrag`'s pointerdown on an rbd drag handle puts the piece in pending-drag state; the follow-up `simulateHumanClick` pairing clicks then landed on a confused control — and both click orders failed anyway.
+2. Verification only read `span.visually-hidden-always` "Matched with" text — this card may mark pairs via `--matched` classes / aria-pressed instead.
+
+Fix: drop `simulateDrag` entirely for non-quiz-match pieces. Per pair: plain `el.click()` L→R, plain R→L, then `simulateHumanClick` both orders (plain clicks avoid triggering the rbd sensor). `landed()` now also accepts both-pieces-`aria-pressed`+`--matched` class / `li--matched` ancestor. `getCurrentMatchText` reads all `visually-hidden*` span variants. Unlanded pairs log the failed texts for the next capture.
