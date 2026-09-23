@@ -664,3 +664,7 @@ Fix: drop `simulateDrag` entirely for non-quiz-match pieces. Per pair: plain `el
 C11613 retry: all 4 click strategies ran per pair but every pair failed — `mango ↔ mango`, `relax ↔ relax`. Root cause found in the incident's control list: this card marks **every** piece `li` as both `draggable` and `droppable`, so `col1Btns` and `col2Btns` selected the same 8 buttons. `col1Texts===col2Texts` → the AI's `L1,R1` answer mapped each piece onto itself → click-pair toggled a piece's own aria-pressed → never a pair.
 
 Fix: when the two column sets fully overlap, re-split all pieces by x-center at the largest x-gap (the visual two-column split is reliable even when li classes aren't). Debug line reports the re-split counts.
+
+### Raffle filler: icon-only pager arrow missed (v9.56)
+
+Paperform's paginated forms use a full-width icon-only arrow button (no innerText/aria-label) — the action regex never matched it, so the filler filled the first page then sat at "filling fields…". Fallback chain now: text-matched buttons → submit/next/arrow-classed → widest visible button outside field wrappers (the next bar; unlabeled back arrows are small).

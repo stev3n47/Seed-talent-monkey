@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.55
+// @version       9.56
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.55';
+    const HELPER_VERSION = '9.56';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -264,7 +264,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.55</span>
+            <span>🤖 Seed Helper v9.56</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1165,9 +1165,22 @@
                 sendDebug('Raffle: filled — ' + raffleFieldLabel(el).trim().slice(0, 60));
             }
         }
+        // Paperform's pager arrow is icon-only (no innerText/aria-label) —
+        // the regex misses it. Fall back to submit-type buttons, then
+        // next/arrow-classed buttons, then a lone visible button in the form.
         const actionBtn = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
             .find(b => isVisible(b) && /submit|send|enter|join|sign ?up|claim|next|continue|done|finish/i.test(
-                String(b.innerText || b.value || b.getAttribute('aria-label') || '').trim()));
+                String(b.innerText || b.value || b.getAttribute('aria-label') || '').trim()))
+            || Array.from(document.querySelectorAll('button[type="submit"], button[class*="submit" i], button[class*="next" i], button[class*="arrow" i]'))
+                .find(b => isVisible(b))
+            || Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter(b => isVisible(b)
+                    && !b.closest('[class*="field"], [class*="question"], .form-group, li, label')
+                    && !/back|prev|close|cancel|skip/i.test(
+                        String(b.innerText || b.getAttribute('aria-label') || '')))
+                // Paperform's next arrow is the wide bottom bar; an unlabeled
+                // back arrow is small — take the widest candidate.
+                .sort((a, b) => b.getBoundingClientRect().width - a.getBoundingClientRect().width)[0];
         if (actionBtn && now - raffleSubmitAt > 4000 && raffleSubmitTries < 12) {
             raffleSubmitAt = now; raffleSubmitTries++;
             sendStatus('Raffle: submitting entry…', '#a6e3a1', true);
