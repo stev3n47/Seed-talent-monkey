@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.56
+// @version       9.57
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.56';
+    const HELPER_VERSION = '9.57';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -264,7 +264,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.56</span>
+            <span>🤖 Seed Helper v9.57</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -436,6 +436,7 @@
                 ['name', 'Full name'], ['email', 'Email'], ['phone', 'Phone'],
                 ['store', 'Store / dispensary'], ['address', 'Street address'],
                 ['city', 'City'], ['state', 'State'], ['zip', 'ZIP code'],
+                ['country', 'Country (defaults to United States)'],
                 ['dob', 'Date of birth (MM/DD/YYYY)'], ['instagram', 'Instagram / social handle'],
             ];
             const next = {};
@@ -1064,6 +1065,7 @@
     let raffleSrc = '', raffleDeadline = 0;
     let raffleSubmitted = false, raffleFailSent = false;
     let raffleProfNagAt = 0, raffleSubmitAt = 0, raffleSubmitTries = 0;
+    const raffleFillCounts = {};
 
     function getProfile() {
         try { const p = JSON.parse(GM_getValue(PROFILE_KEY, '{}')); return (p && typeof p === 'object') ? p : {}; } catch (e) { return {}; }
@@ -1083,29 +1085,41 @@
         [/city|town/i, 'city'],
         [/state|province|region/i, 'state'],
         [/zip|postal/i, 'zip'],
+        [/country|nation/i, 'country'],
         [/birth|d\.?o\.?b|\bage\b|born/i, 'dob'],
         [/insta|social|handle|tiktok|twitter/i, 'instagram'],
     ];
 
+    // Composite groups (the dispensary address block) put keyword-heavy
+    // question text ("dispensary") in the shared wrapper — it matched
+    // 'store' before each sub-field's own label ("Street"/"Zip") could.
+    // Return own-label and wrapper context separately; matching tries own
+    // first, context only as fallback.
     function raffleFieldLabel(el) {
-        let t = [el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.name, el.id]
+        const own = [el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.name, el.id]
             .map(x => String(x || '')).join(' ');
         try {
             const lab = el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-            if (lab) t += ' ' + lab.innerText;
             const wrap = el.closest('label, [class*="field"], [class*="question"], .form-group, li');
-            if (wrap) t += ' ' + String(wrap.innerText || '').slice(0, 160);
-        } catch (e) {}
-        return t;
+            return {
+                own: (own + ' ' + (lab ? String(lab.innerText || '') : '')).trim(),
+                ctx: String((wrap && wrap.innerText) || '').slice(0, 160)
+            };
+        } catch (e) { return { own: own.trim(), ctx: '' }; }
     }
+    function raffleLabelText(el) { const l = raffleFieldLabel(el); return (l.own + ' ' + l.ctx).trim(); }
 
     function raffleValueFor(el) {
-        const label = raffleFieldLabel(el), p = getProfile();
-        for (const [re, key] of RAFFLE_FIELD_MAP) {
-            if (!re.test(label)) continue;
-            if (key === 'firstName') return (p.firstName || (p.name || '').trim().split(/\s+/)[0] || '');
-            if (key === 'lastName') { const w = (p.name || '').trim().split(/\s+/); return p.lastName || (w.length > 1 ? w[w.length - 1] : ''); }
-            return p[key] || '';
+        const l = raffleFieldLabel(el), p = getProfile();
+        for (const hay of [l.own, (l.own + ' ' + l.ctx).trim()]) {
+            if (!hay) continue;
+            for (const [re, key] of RAFFLE_FIELD_MAP) {
+                if (!re.test(hay)) continue;
+                if (key === 'firstName') return (p.firstName || (p.name || '').trim().split(/\s+/)[0] || '');
+                if (key === 'lastName') { const w = (p.name || '').trim().split(/\s+/); return p.lastName || (w.length > 1 ? w[w.length - 1] : ''); }
+                if (key === 'country') return p.country || 'United States';
+                return p[key] || '';
+            }
         }
         return '';
     }
@@ -1148,22 +1162,62 @@
         }
         const fields = Array.from(document.querySelectorAll('input, textarea, select'))
             .filter(el => isVisible(el) && !el.disabled && !el.readOnly);
+        const fillKey = el => (raffleFieldLabel(el).own || el.name || '').toLowerCase().replace(/\d+/g, '').replace(/\W+/g, '').slice(0, 40);
         for (const el of fields) {
             const type = String(el.type || '').toLowerCase();
             if (type === 'checkbox' || type === 'radio') {
-                if (!el.checked && /agree|certif|confirm|consent|terms|accept|\b21\b|age|opt.?in|subscribe/i.test(raffleFieldLabel(el))) {
+                if (!el.checked && /agree|certif|confirm|consent|terms|accept|\b21\b|age|opt.?in|subscribe/i.test(raffleLabelText(el))) {
                     simulateHumanClick(el);
-                    sendDebug('Raffle: checked consent — ' + raffleFieldLabel(el).trim().slice(0, 60));
+                    sendDebug('Raffle: checked consent — ' + raffleLabelText(el).slice(0, 60));
                 }
                 continue;
             }
             if (['hidden', 'submit', 'button', 'file', 'password'].includes(type)) continue;
+            if (el.tagName === 'SELECT') {
+                const want = raffleValueFor(el);
+                const opts = Array.from(el.options || []);
+                const pick = (want && opts.find(o => ((o.text || '') + ' ' + (o.value || '')).toLowerCase().includes(want.toLowerCase())))
+                    || opts.find(o => String(o.value || '').trim() && !/select|choose|please|^[-–—]/i.test(String(o.text || '').trim()));
+                if (pick && el.value !== pick.value) {
+                    const k = fillKey(el); raffleFillCounts[k] = (raffleFillCounts[k] || 0) + 1;
+                    if (raffleFillCounts[k] <= 3) {
+                        setNativeValue(el, pick.value);
+                        sendDebug('Raffle: selected — ' + raffleLabelText(el).slice(0, 60));
+                    }
+                }
+                continue;
+            }
             if (String(el.value || '').trim()) continue;
             const v = raffleValueFor(el);
             if (v) {
-                setNativeValue(el, type === 'date' ? toIsoDate(v) : v);
-                sendDebug('Raffle: filled — ' + raffleFieldLabel(el).trim().slice(0, 60));
+                // React re-renders can wipe a filled value — cap re-fills per
+                // field so a non-sticking control doesn't spam every tick.
+                const k = fillKey(el); raffleFillCounts[k] = (raffleFillCounts[k] || 0) + 1;
+                if (raffleFillCounts[k] <= 3) {
+                    setNativeValue(el, type === 'date' ? toIsoDate(v) : v);
+                    sendDebug('Raffle: filled — ' + raffleLabelText(el).slice(0, 60));
+                }
             }
+        }
+        // Custom dropdowns (Paperform's country picker isn't a <select>):
+        // open the combobox one tick, pick the matching [role=option] next.
+        for (const c of document.querySelectorAll('[role="combobox"], [aria-haspopup="listbox"]')) {
+            if (!isVisible(c)) continue;
+            const want = raffleValueFor(c);
+            if (!want) continue;
+            if ((c.innerText || '').toLowerCase().includes(want.toLowerCase())) break;
+            if (c.getAttribute('aria-expanded') === 'true') {
+                const opt = Array.from(document.querySelectorAll('[role="option"], [class*="option" i]'))
+                    .find(o => isVisible(o) && (o.innerText || '').toLowerCase().includes(want.toLowerCase()));
+                if (opt) { simulateHumanClick(opt); sendDebug('Raffle: picked option — ' + want.slice(0, 40)); }
+            } else {
+                const k = 'combo:' + fillKey(c); raffleFillCounts[k] = (raffleFillCounts[k] || 0) + 1;
+                if (raffleFillCounts[k] <= 4) {
+                    simulateHumanClick(c);
+                    sendDebug('Raffle: opening dropdown — ' + raffleLabelText(c).slice(0, 50));
+                }
+            }
+            break;
         }
         // Paperform's pager arrow is icon-only (no innerText/aria-label) —
         // the regex misses it. Fall back to submit-type buttons, then

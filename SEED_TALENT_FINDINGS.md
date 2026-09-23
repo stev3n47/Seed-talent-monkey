@@ -668,3 +668,9 @@ Fix: when the two column sets fully overlap, re-split all pieces by x-center at 
 ### Raffle filler: icon-only pager arrow missed (v9.56)
 
 Paperform's paginated forms use a full-width icon-only arrow button (no innerText/aria-label) — the action regex never matched it, so the filler filled the first page then sat at "filling fields…". Fallback chain now: text-matched buttons → submit/next/arrow-classed → widest visible button outside field wrappers (the next bar; unlabeled back arrows are small).
+
+### Raffle filler: composite address block + custom dropdown (v9.57)
+
+Paperform's dispensary-address question nests Street/City/State/Zip/Country sub-fields under a wrapper containing "dispensary" — the keyword hit `store` before each field's own label, so every sub-field got the store name; and Country is a custom picker (re-rendered hidden inputs), not a fillable text field.
+
+Fixes: `raffleFieldLabel` now returns `{own, ctx}` — keyword mapping tries the field's own label first, wrapper context only as fallback. Added `country` profile field (defaults to "United States"). Native `<select>` gets option text/value matching with a first-real-option fallback. Custom `[role=combobox]`/`aria-haspopup` dropdowns open one tick and click the matching `[role=option]` next. Re-fills capped at 3 per field (React re-renders were wiping values → every-tick re-fill spam).
