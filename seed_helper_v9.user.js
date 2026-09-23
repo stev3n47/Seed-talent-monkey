@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.54
+// @version       9.55
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.54';
+    const HELPER_VERSION = '9.55';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -264,7 +264,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.54</span>
+            <span>🤖 Seed Helper v9.55</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1895,15 +1895,33 @@
         sendDebug(`detectActiveQuiz: Found submit button. Container=${container.tagName}. MCQ Options=${mcqLabels.length}`);
 
         // Step 3: find matching pieces using confirmed explicit column selectors
-        const col1Btns = Array.from(container.querySelectorAll(
+        let col1Btns = Array.from(container.querySelectorAll(
             'ul.matching-interaction-col-1 button.matching-interaction-piece, ' +
             'li.matching-interaction-item.draggable button.matching-interaction-piece'
         )).filter(el => isVisible(el));
 
-        const col2Btns = Array.from(container.querySelectorAll(
+        let col2Btns = Array.from(container.querySelectorAll(
             'ul.matching-interaction-col-2 button.matching-interaction-piece, ' +
             'li.matching-interaction-item.droppable button.matching-interaction-piece'
         )).filter(el => isVisible(el));
+
+        // Variant guard: some cards mark every piece li as BOTH draggable and
+        // droppable — both selectors then return the same buttons, so
+        // col1Texts===col2Texts and every pair maps a piece onto itself
+        // ("mango ↔ mango"; C11613 incident 1790176140370). Re-split the
+        // pieces by column position at the largest x-gap instead.
+        if (col1Btns.length > 1 && col1Btns.every(b => col2Btns.includes(b))) {
+            const all = [...new Set(col1Btns)];
+            const cxs = all.map(b => { const r = b.getBoundingClientRect(); return r.left + r.width / 2; }).sort((a, b) => a - b);
+            let splitX = (cxs[0] + cxs[cxs.length - 1]) / 2, gap = -1;
+            for (let i = 1; i < cxs.length; i++) {
+                const g = cxs[i] - cxs[i - 1];
+                if (g > gap) { gap = g; splitX = (cxs[i] + cxs[i - 1]) / 2; }
+            }
+            col1Btns = all.filter(b => { const r = b.getBoundingClientRect(); return r.left + r.width / 2 < splitX; });
+            col2Btns = all.filter(b => { const r = b.getBoundingClientRect(); return r.left + r.width / 2 >= splitX; });
+            sendDebug(`detectActiveQuiz: matching selectors overlapped — re-split ${col1Btns.length}L/${col2Btns.length}R by column x-gap`);
+        }
 
         // Dropdown-matching variant: li.matching-item rows each carrying a
         // <select> or a popup-listbox trigger instead of draggable pieces.

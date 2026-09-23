@@ -658,3 +658,9 @@ C11613 "Click and drag each intention to the correct flavor" looped ~5min: `Drag
 2. Verification only read `span.visually-hidden-always` "Matched with" text — this card may mark pairs via `--matched` classes / aria-pressed instead.
 
 Fix: drop `simulateDrag` entirely for non-quiz-match pieces. Per pair: plain `el.click()` L→R, plain R→L, then `simulateHumanClick` both orders (plain clicks avoid triggering the rbd sensor). `landed()` now also accepts both-pieces-`aria-pressed`+`--matched` class / `li--matched` ancestor. `getCurrentMatchText` reads all `visually-hidden*` span variants. Unlanded pairs log the failed texts for the next capture.
+
+### matching-interaction: identical column sets → identity self-pairs (v9.55, incident 1790176140370)
+
+C11613 retry: all 4 click strategies ran per pair but every pair failed — `mango ↔ mango`, `relax ↔ relax`. Root cause found in the incident's control list: this card marks **every** piece `li` as both `draggable` and `droppable`, so `col1Btns` and `col2Btns` selected the same 8 buttons. `col1Texts===col2Texts` → the AI's `L1,R1` answer mapped each piece onto itself → click-pair toggled a piece's own aria-pressed → never a pair.
+
+Fix: when the two column sets fully overlap, re-split all pieces by x-center at the largest x-gap (the visual two-column split is reliable even when li classes aren't). Debug line reports the re-split counts.
