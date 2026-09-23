@@ -636,3 +636,9 @@ Rove Q4/10 "Match the following voltage settings and colors": solver found the p
 Also the grip/socket direction is **reversed** on this card — ⋮⋮ grips on the RIGHT column — so even real drags aimed at non-draggables.
 
 Fix (solveMatchingQuestion pair loop, non-quiz-match only): `canDrag` detects a real drag source (`draggable`/`li.draggable`/`data-rbd-drag-handle`) and drags that side onto the other; otherwise click-pairs via simulateHumanClick (single activation — safe on buttons), trying both click orders. Every pair is verified through getCurrentMatchText on BOTH elements; unlanded pairs count into `unmatched` → releaseFailedQuestion (bounded re-solve) instead of submitting to the "Please answer" loop. quiz-match path untouched.
+
+### Shared submit-bar wrapper poisons the --active gate (v9.52, incident 1790170308706)
+
+Wildberry C4820 step 4/5: Card A answered (Correct), Card B live with enabled SUBMIT — every tick logged `submit skipped — belongs to a non-active card`. Cause: B's submit bar sits **outside** its card, so `closest()` climbed to a shared wrapper containing Card A's feedback → the v9.51 `resolved` check saw feedback and skipped the live submit forever.
+
+Refined gate: `staleActive = cardResolved(activeCard)`. A live --active card keeps the original skip (foreign submits are stale). When --active is itself resolved, bind `nearestLiveCard()` — the unresolved, option-bearing `.quiz-card` nearest the submit's rect — covering both the shared-wrapper case and stale-ownCard. Disabled inputs excluded from `cardLive` so answered cards don't qualify.
