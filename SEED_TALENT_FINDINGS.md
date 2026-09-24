@@ -680,3 +680,9 @@ Fixes: `raffleFieldLabel` now returns `{own, ctx}` — keyword mapping tries the
 C10539: raffle submitted successfully at 11:23, then `Raffle entry submitted — continuing…` repeated for ~55min — the course never advanced and the queue never moved on. `handleRaffleEmbed`'s DONE branch returned `true` every tick → reset `stuckSince` forever → watchdog starved (same failure class as the v9.48 frozen-sweep bug).
 
 Fix: DONE is now one-shot — delete the host, mark the signature handled, reset `stuckSince` once, `return false`. The normal engine flow resumes; if the page still can't advance, unknown-idle fires at 15s → queue skips/continues. Any branch that reports "handled" must still let the watchdog see real progress.
+
+### Hidden-tab throttling — worker-driven tick + sleep release (v9.59)
+
+Chrome intensively throttles page timers in hidden/occluded/minimized tabs (~1/min after ~5min hidden). A QUEUE run in a backgrounded window crawled — every `sleep(350)` inside a solve stretched to ~60s.
+
+Mitigation: a module-level blob `Worker` runs `setInterval(postMessage,1000)` — worker timers are exempt from intensive throttling. While `document.hidden`, each worker message (a) releases queued `sleep()` waiters whose deadline passed (hidden sleeps degrade to ~1s granularity instead of ~60s) and (b) drives an extra `tickBody`. Foreground path is untouched. CSP may block `blob:` workers on some pages — the normal interval remains as the throttled fallback. Nuclear alternative: launch Chrome with `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`.
