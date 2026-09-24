@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.57
+// @version       9.58
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.57';
+    const HELPER_VERSION = '9.58';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -264,7 +264,7 @@
 
           <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
                display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v9.57</span>
+            <span>🤖 Seed Helper v9.58</span>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
                 <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
                 <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
@@ -1256,10 +1256,17 @@
         const host = hostOf(unhandled.evidence && unhandled.evidence.src);
         if (!host || !RAFFLE_HOST_RE.test(host)) return false;
         if (raffleDoneHosts.has(host)) {
+            // One-shot: submitted = real progress, but returning true forever
+            // starved the idle watchdog exactly like the frozen-sweep bug —
+            // the giveaway page never advanced and the queue wedged
+            // (55min of "Raffle entry submitted — continuing…", C10539).
+            // Mark the signature handled, then fall through: normal engine
+            // flow resumes and unknown-idle fires if the page can't move on.
+            raffleDoneHosts.delete(host);
             unhandledSurfaces.add(unhandled.signature);
             stuckSince = 0;
             sendStatus('Raffle entry submitted — continuing…', '#a6e3a1', true);
-            return true;
+            return false;
         }
         if (raffleFailHosts.has(host)) return false;
         if (raffleSrc !== host) { raffleSrc = host; raffleDeadline = now + 90000; }

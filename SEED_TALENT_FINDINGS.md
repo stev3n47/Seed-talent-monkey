@@ -674,3 +674,9 @@ Paperform's paginated forms use a full-width icon-only arrow button (no innerTex
 Paperform's dispensary-address question nests Street/City/State/Zip/Country sub-fields under a wrapper containing "dispensary" — the keyword hit `store` before each field's own label, so every sub-field got the store name; and Country is a custom picker (re-rendered hidden inputs), not a fillable text field.
 
 Fixes: `raffleFieldLabel` now returns `{own, ctx}` — keyword mapping tries the field's own label first, wrapper context only as fallback. Added `country` profile field (defaults to "United States"). Native `<select>` gets option text/value matching with a first-real-option fallback. Custom `[role=combobox]`/`aria-haspopup` dropdowns open one tick and click the matching `[role=option]` next. Re-fills capped at 3 per field (React re-renders were wiping values → every-tick re-fill spam).
+
+### Raffle DONE path starved the queue (v9.58, sniff 1790252319983)
+
+C10539: raffle submitted successfully at 11:23, then `Raffle entry submitted — continuing…` repeated for ~55min — the course never advanced and the queue never moved on. `handleRaffleEmbed`'s DONE branch returned `true` every tick → reset `stuckSince` forever → watchdog starved (same failure class as the v9.48 frozen-sweep bug).
+
+Fix: DONE is now one-shot — delete the host, mark the signature handled, reset `stuckSince` once, `return false`. The normal engine flow resumes; if the page still can't advance, unknown-idle fires at 15s → queue skips/continues. Any branch that reports "handled" must still let the watchdog see real progress.
