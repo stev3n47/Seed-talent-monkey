@@ -726,3 +726,28 @@ card-level element. Selector widened to any front-face
 buttons are skipped explicitly. `controlEvidence` now records `id` and
 the card ancestor's class for flip buttons — the next incident shows
 whether unclaimed cards were actually flipped.
+
+## v9.63 — generic sweep scroller + skip-reason telemetry (5× unknown-idle incidents)
+
+Five fresh v9.62 incidents auto-downloaded. All Rise stalls shared
+"Complete the content above before moving on" with unclaimed controls:
+- C2653 BITS: 5 `labeled-graphic-marker` buttons "Not viewed" — never
+  claimed once (no 'Completing interactive block' entries at all).
+- C2818: carousel mid-block. C2814: only Zoom-image buttons + lock.
+- C2267 Wyld: all 4 cards confirmed `--flipped` (the new `card:` field
+  works — C11528-class flips are completing), remaining wedge was a quiz
+  card + unchecked block-list inputs.
+- Coassemble embed: unsupported surface, correctly skipped.
+
+Root suspect for the BITS-class stalls: `isVisible` filters markers that
+are `opacity:0` until scroll-mounted, AND the sweep only probed
+`.page-wrap/.page__wrapper/.lesson-main` — if the scroll container uses
+other class names the sweep silently never armed (no 'Reviewing' lines in
+any of these journals). Two changes:
+
+1. Sweep resolves the scroller generically — walk up from the locked
+   button or first `[data-block-id]` to the outermost scrollable ancestor.
+2. Skip telemetry: every filtered interactive now records a reason code
+   (vis/locked/active/expanded/visited/fc-done/backface/checked/tab-order/
+   dot-order/tries-cap) in `lastC1Skips`, appended to the Unknown-idle
+   debug line and incident journal — next stall names the actual filter.

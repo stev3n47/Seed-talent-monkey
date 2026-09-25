@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.62
+// @version       9.63
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.62';
+    const HELPER_VERSION = '9.63';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -938,7 +938,7 @@
         idleIncidents.add(signature);
         const incident = buildIncident('unknown-idle', null);
         try { window.top.postMessage({ type: 'SEED_UNKNOWN_IDLE', incident }, '*'); } catch(e) {}
-        sendDebug(`Unknown idle: ${signature.slice(0, 140)}`);
+        sendDebug(`Unknown idle: ${signature.slice(0, 140)}${lastC1Skips.length ? ' | skips: ' + lastC1Skips.slice(0, 12).join(',') : ''}`);
         return true;
     }
 
@@ -1705,6 +1705,9 @@
     const lastAttempt   = {};
     const unhandledSurfaces = new Set();
     const terminalPages = new Set();
+    const lastC1Skips  = [];   // per-tick: why each interactive was filtered —
+                               // read by reportUnknownIdle so incidents name
+                               // the blocking filter, not just "idle".
     let stuckSince = 0;
     const frameBornAt = Date.now();  // Rise lazy-mounts first content ~10-15s —
                                      // a 15s idle watchdog can fire before the
@@ -2759,10 +2762,14 @@
                 '.block-list [role="checkbox"]'
             );
 
+            lastC1Skips.length = 0;
             for (const el of interactives) {
-                if (clickedInteractive || !isVisible(el)) continue;
+                const elTag = String(el.className || '').split(' ')[0].slice(0, 30);
+                const sk = r => { if (lastC1Skips.length < 24) lastC1Skips.push(r + ':' + elTag); return true; };
+                if (clickedInteractive) continue;
+                if (!isVisible(el)) { sk('vis'); continue; }
                 const locked = el.disabled || el.getAttribute('aria-disabled') === 'true';
-                if (locked) continue;
+                if (locked) { sk('locked'); continue; }
 
                 // Skip tabs/slides that are currently active
                 if (el.classList.contains('tab-nav__item--active') ||
@@ -2771,17 +2778,17 @@
                     el.classList.contains('blocks-slide-indicator__button--active') ||
                     el.getAttribute('aria-selected') === 'true' ||
                     el.getAttribute('aria-current') === 'page' ||
-                    el.getAttribute('aria-current') === 'true') continue;
+                    el.getAttribute('aria-current') === 'true') { sk('active'); continue; }
 
                 // Skip accordions that are already open
-                if (el.getAttribute('aria-expanded') === 'true') continue;
+                if (el.getAttribute('aria-expanded') === 'true') { sk('expanded'); continue; }
                 // Skip labeled graphic markers that are visited. C1256 uses
                 // --complete + aria-label "Viewed" (not is-visited), so without
                 // this every viewed marker is re-clicked each tick.
-                if (el.classList.contains('is-visited') || el.classList.contains('labeled-graphic-marker--complete')) continue;
+                if (el.classList.contains('is-visited') || el.classList.contains('labeled-graphic-marker--complete')) { sk('visited'); continue; }
                 // Rise marks viewed tabs/markers with a --visited/--complete/--seen
                 // suffix — re-clicking them would cycle the tab strip forever.
-                if (/--(visited|complete|seen)\b/.test(el.className)) continue;
+                if (/--(visited|complete|seen)\b/.test(el.className)) { sk('seen-cls'); continue; }
                 // Flipped flashcards keep both faces mounted with backface-
                 // visibility — the front button still has a rect, so isVisible
                 // can't tell and re-clicks flip the card BACK (Black Label
@@ -2798,21 +2805,21 @@
                         a = a.parentElement;
                     }
                 }
-                if (fc && (/flipped|viewed|complete/i.test(fc.className) || /,\s*(viewed|flipped|seen)\s*$/i.test(fc.getAttribute('aria-label') || ''))) continue;
+                if (fc && (/flipped|viewed|complete/i.test(fc.className) || /,\s*(viewed|flipped|seen)\s*$/i.test(fc.getAttribute('aria-label') || ''))) { sk('fc-done'); continue; }
                 // Back-face flip buttons are never a completion requirement.
                 if (el.matches('button.flashcard-side-flip__btn') &&
-                    (el.closest('[class*="flashcard-side--back"]') || /-back-flip-btn$/i.test(el.id || ''))) continue;
-                if (el.classList.contains('labeled-graphic-marker') && /,\s*Viewed\s*$/i.test(el.getAttribute('aria-label') || '')) continue;
+                    (el.closest('[class*="flashcard-side--back"]') || /-back-flip-btn$/i.test(el.id || ''))) { sk('backface'); continue; }
+                if (el.classList.contains('labeled-graphic-marker') && /,\s*Viewed\s*$/i.test(el.getAttribute('aria-label') || '')) { sk('marker-viewed'); continue; }
 
                 // Skip checkboxes that are already checked
-                if (el.getAttribute('aria-checked') === 'true') continue;
+                if (el.getAttribute('aria-checked') === 'true') { sk('checked'); continue; }
                 if (el.matches('label.block-list__option')) {
                     const cb = el.querySelector('input[type="checkbox"]');
-                    if (cb && cb.checked) continue;
+                    if (cb && cb.checked) { sk('list-checked'); continue; }
                     // Decorative label on a role=checkbox item — the role
                     // element handles the toggle; clicking both double-fires.
                     const item = el.closest('.block-list__item');
-                    if (item && item.querySelector('[role="checkbox"]')) continue;
+                    if (item && item.querySelector('[role="checkbox"]')) { sk('list-role'); continue; }
                 }
 
                 const block = el.closest('[data-block-id]');
@@ -2827,7 +2834,7 @@
                 if (tabsSel) {
                     const allTabs = Array.from((block || document).querySelectorAll(tabsSel));
                     const activeTabIdx = allTabs.findIndex(d => /--active\b/.test(d.className) || d.getAttribute('aria-selected') === 'true');
-                    if (allTabs.indexOf(el) !== (activeTabIdx + 1) % allTabs.length) continue;
+                    if (allTabs.indexOf(el) !== (activeTabIdx + 1) % allTabs.length) { sk('tab-order'); continue; }
                 }
 
                 // For slide dots, strictly enforce forward-only navigation to avoid infinite loops
@@ -2835,7 +2842,7 @@
                     const allDots = Array.from((block || document).querySelectorAll('.blocks-slide-indicator__button'));
                     const activeIdx = allDots.findIndex(d => d.classList.contains('blocks-slide-indicator__button--active') || d.getAttribute('aria-current') === 'page');
                     const myIdx = allDots.indexOf(el);
-                    if (myIdx <= activeIdx) continue;
+                    if (myIdx <= activeIdx) { sk('dot-order'); continue; }
                 }
 
                 let t = (el.innerText || el.textContent || '').trim().substring(0, 30);
@@ -2850,7 +2857,7 @@
                 }
 
                 const tries = interactedBlocks[intId] || 0;
-                if (tries >= 15) continue; // safety fallback for looping carousels/processes
+                if (tries >= 15) { sk('tries-cap'); continue; } // safety fallback for looping carousels/processes
                 interactedBlocks[intId] = tries + 1;
                 clickedInteractive = true;
 
@@ -3068,9 +3075,22 @@
             // and lazy blocks mount only while scrolling. Sweep the real
             // scroller top→bottom; reaching the bottom ends the pass, and a
             // page change (new signature / scrollTop reset) re-sweeps naturally.
-            const scroller = (lockedBtn && lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]'))
-                || Array.from(document.querySelectorAll('.page-wrap, .page__wrapper, .lesson-main')).find(s => s.scrollHeight > s.clientHeight + 40)
-                || document.documentElement;
+            // Resolve generically: newer Rise builds don't always name the
+            // scroller .page-wrap — walk up from a content anchor to the
+            // OUTERMOST scrollable ancestor (C2653/BITS-style stalls where the
+            // sweep silently never armed).
+            const isScrollableEl = s => s.scrollHeight > s.clientHeight + 40
+                && /(auto|scroll)/.test(getComputedStyle(s).overflowY);
+            let scroller = lockedBtn && lockedBtn.closest('.page-wrap, .page__wrapper, .lesson-main, [style*="overflow: auto"], [style*="overflow-y: auto"]');
+            if (!scroller) {
+                let p = (lockedBtn || document.querySelector('[data-block-id], main, [class*="lesson"], [class*="page"]') || document.body).parentElement;
+                while (p && p !== document.body && p !== document.documentElement) {
+                    if (isScrollableEl(p)) scroller = p;  // keep walking — outermost wins
+                    p = p.parentElement;
+                }
+            }
+            if (!scroller) scroller = Array.from(document.querySelectorAll('.page-wrap, .page__wrapper, .lesson-main')).find(isScrollableEl);
+            if (!scroller) scroller = document.documentElement;
             if (scroller && scroller.scrollHeight > scroller.clientHeight + 40) {
                 const heading = document.querySelector('h1, h2');
                 const sig = clipStr(frameOriginPath() + '|' + (location.hash || '') + '|' + scroller.scrollHeight + '|' + (heading ? heading.innerText.trim().slice(0, 40) : ''), 240);
