@@ -704,3 +704,25 @@ The "Seed Helper vX.YZ" badge was a literal string in the panel template,
 not bound to `HELPER_VERSION` — it read v9.59 on v9.60, making it look
 like Violentmonkey updates weren't applying when they were. Now renders
 `v${HELPER_VERSION}` so it can't drift again.
+
+## v9.62 — incident auto-download + flashcard guard self-match bug
+
+**Auto-save:** incidents now `downloadJson` automatically inside
+`storeIncident` (all types) — unattended queue runs leave evidence without
+anyone clicking INCIDENT. Chrome may ask once to allow automatic downloads
+for the site.
+
+**C11528 (DARK HEART) recurring stall** — same flashcard lesson stalled
+across 5 sessions: one "Flipping required card" then idle → unknown-idle,
+with 2 `flashcard-side-flip__btn` buttons still present and continue locked
+("Complete the content above"). Root cause candidate found in the guard:
+`el.closest('.flashcard, [class*="flashcard"]')` **self-matches** — the
+button's own class contains "flashcard", so `closest()` returned the
+button and the flipped-card check never saw the card. Fixed: prefer
+`closest('.flashcard')`, else walk ancestors past `--side` wrappers to a
+card-level element. Selector widened to any front-face
+`.flashcard-side-flip__btn` (the old arms required literal `.flashcard`
++ `--flipped`/id conventions this variant may not share); back-face
+buttons are skipped explicitly. `controlEvidence` now records `id` and
+the card ancestor's class for flip buttons — the next incident shows
+whether unclaimed cards were actually flipped.

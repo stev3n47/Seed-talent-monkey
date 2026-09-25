@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.61
+// @version       9.62
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.61';
+    const HELPER_VERSION = '9.62';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -727,6 +727,8 @@
                     type: String((o && o.type) || '').slice(0, 40),
                     role: String((o && o.role) || '').slice(0, 60),
                     label: scrubIncidentText(o && o.label, 100),
+                    id: clipStr((o && o.id) || '', 60),
+                    card: clipStr((o && o.card) || '', 100),
                     disabled: !!(o && o.disabled),
                     checked: !!(o && o.checked),
                     cls: String((o && o.cls) || '').slice(0, 120)
@@ -763,6 +765,10 @@
                 }));
                 latestIncident = safe;
                 if (incidentBtn) incidentBtn.style.display = 'inline-block';
+                // Auto-save so unattended queue runs leave evidence — the
+                // INCIDENT button remains as a manual re-download.
+                const safeType = String(safe.type || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'unknown';
+                downloadJson('seed_incident_' + safeType + '_' + Date.now() + '.json', safe);
                 // Pipeline: hand the incident to the local capture listener
                 // (capture_server.js, port 8766) — silent no-op when it isn't running.
                 try {
@@ -1345,6 +1351,18 @@
     }
 
     function controlEvidence(el) {
+        // For flashcard flip buttons, the button class never carries state —
+        // the card does. Record the nearest card-level ancestor's class so an
+        // incident can tell flipped from unflipped.
+        let cardCls = '';
+        if (el && el.matches && el.matches('.flashcard-side-flip__btn, .flashcard__turn')) {
+            let a = el.parentElement;
+            while (a && a !== document.body) {
+                const ac = String(a.className || '');
+                if (/flashcard/i.test(ac) && !/flashcard-side/i.test(ac)) { cardCls = ac; break; }
+                a = a.parentElement;
+            }
+        }
         return {
             tag: el && el.tagName ? String(el.tagName).toLowerCase() : '',
             type: clipStr(el && el.getAttribute ? el.getAttribute('type') : '', 40),
@@ -1352,6 +1370,8 @@
             label: scrubIncidentText(el ? (el.getAttribute('aria-label') || el.innerText || el.textContent) : '', 100),
             disabled: !!(el && (el.disabled || el.getAttribute('aria-disabled') === 'true')),
             checked: !!(el && el.checked),
+            id: clipStr(el && el.id ? String(el.id) : '', 60),
+            card: clipStr(cardCls, 100),
             cls: clipStr(el ? (el.getAttribute('class') || '') : '', 120)
         };
     }
@@ -2725,8 +2745,10 @@
                 'button.block-carousel__control--next, ' +
                 'button.labeled-graphic-marker, ' +
                 'button.flashcard__turn, ' +
-                '.flashcard:not(.flashcard--flipped) button.flashcard-side-flip__btn[id$="-front-flip-btn"], ' +
-                '.flashcard:not(.flashcard--flipped) .flashcard-side--front .flashcard-side-flip__btn, ' +
+                // Any front-face flip button — the guard above now rejects
+                // flipped cards and back faces regardless of the card's exact
+                // class naming (C11528's variant stalls otherwise).
+                'button.flashcard-side-flip__btn, ' +
                 'button.block-flashcards-slider__arrow--next, ' +
                 'button.process-counter__btn, ' +
                 'button.blocks-slide-indicator__button, ' +
@@ -2764,8 +2786,22 @@
                 // visibility — the front button still has a rect, so isVisible
                 // can't tell and re-clicks flip the card BACK (Black Label
                 // flip-flop loop). Guard at the container, all variants.
-                const fc = el.closest('.flashcard, [class*="flashcard"]');
+                // NOTE: the button's own class contains "flashcard" so closest()
+                // self-matches — walk ancestors past --side wrappers to a level
+                // that can actually carry the card's flipped/complete marker.
+                let fc = el.closest('.flashcard');
+                if (!fc) {
+                    let a = el.parentElement;
+                    while (a && a !== document.body) {
+                        const ac = String(a.className || '');
+                        if (/flashcard/i.test(ac) && !/flashcard-side/i.test(ac)) { fc = a; break; }
+                        a = a.parentElement;
+                    }
+                }
                 if (fc && (/flipped|viewed|complete/i.test(fc.className) || /,\s*(viewed|flipped|seen)\s*$/i.test(fc.getAttribute('aria-label') || ''))) continue;
+                // Back-face flip buttons are never a completion requirement.
+                if (el.matches('button.flashcard-side-flip__btn') &&
+                    (el.closest('[class*="flashcard-side--back"]') || /-back-flip-btn$/i.test(el.id || ''))) continue;
                 if (el.classList.contains('labeled-graphic-marker') && /,\s*Viewed\s*$/i.test(el.getAttribute('aria-label') || '')) continue;
 
                 // Skip checkboxes that are already checked
