@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.65
+// @version       9.66
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.65';
+    const HELPER_VERSION = '9.66';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -938,7 +938,9 @@
         idleIncidents.add(signature);
         const incident = buildIncident('unknown-idle', null);
         try { window.top.postMessage({ type: 'SEED_UNKNOWN_IDLE', incident }, '*'); } catch(e) {}
-        sendDebug(`Unknown idle: ${signature.slice(0, 140)}${lastC1Skips.length ? ' | skips: ' + lastC1Skips.slice(0, 12).join(',') : ''}`);
+        // Skips go first — journalPush clips at 160 chars and a leading
+        // signature eats the whole budget (v9.63 telemetry never surfaced).
+        sendDebug(`Unknown idle${lastC1Skips.length ? ' | skips: ' + lastC1Skips.slice(0, 10).join(',') : ''}: ${signature.slice(0, 90)}`);
         return true;
     }
 

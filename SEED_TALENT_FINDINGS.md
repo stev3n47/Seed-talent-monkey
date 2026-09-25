@@ -778,3 +778,20 @@ idle → incident. Now: 4 tries on the model pile, then each OTHER pile
 once (cap = 4 + nAltPiles) — wrong model answers self-correct on 2-pile
 decks. Same frame also showed a quiz AI retry loop ("Incorrect" →
 re-solve, past-failures injected) — separately bounded, no change.
+
+## v9.66 — skip telemetry was being truncated by the 160-char journal clip
+
+Six v9.65 incidents reviewed: all flashcards confirmed `--flipped` (DARK
+HEART, CORE SIX, SAVVY, Puffco — flips verified working incl. the
+`flashcard--stack` variant), and `labeled-graphic-marker` "Not viewed"
+buttons remain the dominant unclaimed control (SAVVY, BRIQ 2).
+
+But the v9.63 `skips:` suffix never appeared: `journalPush` clips text at
+160 chars and `'Unknown idle: ' + signature(≤140)` consumed the whole
+budget, silently truncating the telemetry. Reordered — skips now lead the
+line, signature trimmed to 90.
+
+Multi-video note (user-observed, Puffco What's New): embed play buttons
+each get 3 bounded clicks; several buttons churn ~30s before the watchdog.
+Clicks likely don't reach the cross-origin player — honest skip either
+way, just slow. Not changed yet.
