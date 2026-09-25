@@ -697,3 +697,10 @@ requires the frame to be ≥30s old before an unknown-idle incident can
 report; the 15s bound is unchanged for mid-course stalls, and
 unhandled-adapter detection (external embeds, Storyline) still probes at
 5s. Skips remain explicit and bounded — just not premature.
+
+## v9.61 — panel version badge was hardcoded
+
+The "Seed Helper vX.YZ" badge was a literal string in the panel template,
+not bound to `HELPER_VERSION` — it read v9.59 on v9.60, making it look
+like Violentmonkey updates weren't applying when they were. Now renders
+`v${HELPER_VERSION}` so it can't drift again.
