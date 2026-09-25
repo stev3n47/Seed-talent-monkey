@@ -768,3 +768,13 @@ Other incidents reviewed: C2044 Puffco = embed video player with
 deck at 10/10 with next-step gated on content completion — the v9.63
 generic sweep should reach lazy-mounted leftovers. C1520 quiz answered
 Correct but locked — same below-fold class.
+
+## v9.65 — card-sort alt-pile fallback (C3851 Bacio Gelato)
+
+Live diag showed "Pink Panties → Gelato" dragged 3× while other cards
+landed first-try — drags DO register, so a bounce = the model's pile was
+wrong. Old behavior: 4 identical drops then exhaust → card stays active →
+idle → incident. Now: 4 tries on the model pile, then each OTHER pile
+once (cap = 4 + nAltPiles) — wrong model answers self-correct on 2-pile
+decks. Same frame also showed a quiz AI retry loop ("Incorrect" →
+re-solve, past-failures injected) — separately bounded, no change.

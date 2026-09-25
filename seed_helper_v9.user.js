@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.64
+// @version       9.65
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.64';
+    const HELPER_VERSION = '9.65';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -3048,10 +3048,18 @@
                         }
                         if (isVisible(card) && isVisible(pile)) {
                             const att = sortRetries[card.id] || 0;
-                            if (att < 4) {
+                            // When the model's pile keeps bouncing, try each
+                            // other pile once — model answers can be stale
+                            // (C3851: "Pink Panties → Gelato" rejected 3×).
+                            const piles = Array.from(sortBlock.querySelectorAll('.pile'));
+                            const others = piles.filter(p => p !== pile);
+                            const cap = 4 + others.length;
+                            if (att < cap) {
+                                const target = att < 4 ? pile : others[att - 4];
+                                const tt = ((target.querySelector('.pile__title') || {}).innerText || _sortingKey[card.id]).trim();
                                 sortRetries[card.id] = att + 1;
-                                sendStatus(`Sorting card: ${(card.innerText || '').trim().slice(0, 30)} → ${_sortingKey[card.id]}`, '#f9e2af', true);
-                                setTimeout(() => { try { simulateDrag(card, pile); } catch(e) {} }, 400);
+                                sendStatus(`Sorting card: ${(card.innerText || '').trim().slice(0, 30)} → ${tt}${att >= 4 ? ' (alt)' : ''}`, '#f9e2af', true);
+                                setTimeout(() => { try { simulateDrag(card, target); } catch(e) {} }, 400);
                                 nextActionTime = now + 2500;
                                 stuckSince = 0;
                                 return;
