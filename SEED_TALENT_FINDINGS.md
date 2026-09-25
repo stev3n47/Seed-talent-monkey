@@ -686,3 +686,14 @@ Fix: DONE is now one-shot — delete the host, mark the signature handled, reset
 Chrome intensively throttles page timers in hidden/occluded/minimized tabs (~1/min after ~5min hidden). A QUEUE run in a backgrounded window crawled — every `sleep(350)` inside a solve stretched to ~60s.
 
 Mitigation: a module-level blob `Worker` runs `setInterval(postMessage,1000)` — worker timers are exempt from intensive throttling. While `document.hidden`, each worker message (a) releases queued `sleep()` waiters whose deadline passed (hidden sleeps degrade to ~1s granularity instead of ~60s) and (b) drives an extra `tickBody`. Foreground path is untouched. CSP may block `blob:` workers on some pages — the normal interval remains as the throttled fallback. Nuclear alternative: launch Chrome with `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`.
+
+## v9.60 — unknown-idle grace for freshly-mounted frames (diag 1790342931282)
+
+Queue logs showed several courses skipped at almost exactly mount+15s
+(C4418 Resin Rosin ~16s, C11528 DARK HEART ~15s): Rise lazy-mounts first
+content in ~10-15s, so the 15s idle watchdog could fire before the page
+rendered — healthy courses were being skipped as "stuck". The watchdog now
+requires the frame to be ≥30s old before an unknown-idle incident can
+report; the 15s bound is unchanged for mid-course stalls, and
+unhandled-adapter detection (external embeds, Storyline) still probes at
+5s. Skips remain explicit and bounded — just not premature.

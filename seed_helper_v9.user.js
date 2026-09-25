@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.59
+// @version       9.60
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.59';
+    const HELPER_VERSION = '9.60';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -1686,6 +1686,9 @@
     const unhandledSurfaces = new Set();
     const terminalPages = new Set();
     let stuckSince = 0;
+    const frameBornAt = Date.now();  // Rise lazy-mounts first content ~10-15s —
+                                     // a 15s idle watchdog can fire before the
+                                     // page renders; grace below covers that.
     let activeSolveQId = null;   // question currently being solved by the AI
     const quizSolveFails = {};   // per-question AI-failure count (max 3 retries)
     const errorReleased = new Set(); // qids released via submission error — re-click selections, DOM state is untrusted
@@ -3102,7 +3105,10 @@
                 if (unhandled && reportUnhandledAdapter(unhandled)) return;
             }
             // Recognized adapters win first; any other real stall pauses by 15s.
-            if (now - stuckSince >= 15000) {
+            // Fresh frames get 30s before an unknown-idle incident — Rise takes
+            // ~10-15s+ to lazy-mount first content, so mount+15s skips healthy
+            // courses (diag 1790342931282: C4418 incident at ~mount+16s).
+            if (now - stuckSince >= 15000 && now - frameBornAt >= 30000) {
                 if (reportUnknownIdle()) return;
             }
             sendStatus('Idle - nothing actionable found on this page.', '#bac2de', true);
