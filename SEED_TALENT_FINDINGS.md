@@ -795,3 +795,20 @@ Multi-video note (user-observed, Puffco What's New): embed play buttons
 each get 3 bounded clicks; several buttons churn ~30s before the watchdog.
 Clicks likely don't reach the cross-origin player — honest skip either
 way, just slow. Not changed yet.
+
+## v9.67 — triedInteractives telemetry (35-incident batch analysis)
+
+35 incidents across ~28 courses — a broad QUEUE sweep, not one stuck
+course. 8 were the same Coassemble embed (correct repeated skip). 24 had
+interactive-class controls still present; 23 had locked navigation.
+
+Root-cause gap found in the telemetry itself: `lastC1Skips` was empty in
+every incident because a claimed-first candidate `return`s mid-loop each
+tick — the remaining candidates never evaluate, so no skip reasons ever
+accumulate. Incidents now carry `triedInteractives` (intId → try-count)
+from `interactedBlocks` — shows exactly which controls burned their 15
+tries, distinguishing "clicks never registered" from "never reached".
+
+Batch observations: RYTHM held 20+ `process-counter__btn` steppers +
+4 div options; Wyld confirmed all-flipped cards with a quiz wedge +
+unchecked block-list inputs; multi-video Puffco embed-play churn bounded.

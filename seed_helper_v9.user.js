@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.66
+// @version       9.67
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.66';
+    const HELPER_VERSION = '9.67';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -708,7 +708,8 @@
                     embeds: [],
                     recentActions: [],
                     runtimeErrors: [],
-                    recentNetwork: []
+                    recentNetwork: [],
+                    triedInteractives: []
                 };
                 const srcEv = (raw && raw.detection && raw.detection.evidence) || {};
                 for (const k of ['frame', 'src']) {
@@ -755,6 +756,10 @@
                     source: sanitizeIncidentUrl(er && er.source),
                     line: Number(er && er.line) || 0,
                     column: Number(er && er.column) || 0
+                }));
+                safe.triedInteractives = (((raw && raw.triedInteractives) || [])).slice(0, 15).map(x => ({
+                    id: scrubIncidentText(x && x.id, 120),
+                    n: Number(x && x.n) || 0
                 }));
                 // Top-frame only: attach bounded sniff data — never bodies.
                 safe.recentNetwork = sniffEntries.slice(-30).map(en => ({
@@ -1395,8 +1400,18 @@
             canvases: [],
             embeds: [],
             recentActions: [],
-            runtimeErrors: []
+            runtimeErrors: [],
+            triedInteractives: []
         };
+        // Which controls burned claim-attempts: the lastC1Skips list only shows
+        // FILTERED candidates — a claimed-first candidate preempts the rest of
+        // the loop every tick, leaving it empty even when retries are spent.
+        // interactedBlocks is the ground truth for "clicked but never took".
+        try {
+            incident.triedInteractives = Object.entries(interactedBlocks)
+                .slice(-15)
+                .map(([id, n]) => ({ id: scrubIncidentText(id, 120), n: Number(n) || 0 }));
+        } catch (e) {}
         if (detection) {
             incident.detection.kind = clipStr(detection.kind, 60);
             incident.detection.label = clipStr(detection.label, 120);
