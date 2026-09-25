@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.63
+// @version       9.64
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.63';
+    const HELPER_VERSION = '9.64';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -2759,6 +2759,7 @@
                 'button.blocks-gallery-grid__image, ' +
                 'button.interactive-grid__item, ' +
                 'label.block-list__option, ' +
+                'div.block-list__option, ' +
                 '.block-list [role="checkbox"]'
             );
 
@@ -2813,12 +2814,12 @@
 
                 // Skip checkboxes that are already checked
                 if (el.getAttribute('aria-checked') === 'true') { sk('checked'); continue; }
-                if (el.matches('label.block-list__option')) {
+                if (el.matches('label.block-list__option, div.block-list__option')) {
                     const cb = el.querySelector('input[type="checkbox"]');
                     if (cb && cb.checked) { sk('list-checked'); continue; }
-                    // Decorative label on a role=checkbox item — the role
+                    // Decorative label/div on a role=checkbox item — the role
                     // element handles the toggle; clicking both double-fires.
-                    const item = el.closest('.block-list__item');
+                    const item = el.matches('div.block-list__option') ? el : el.closest('.block-list__item');
                     if (item && item.querySelector('[role="checkbox"]')) { sk('list-role'); continue; }
                 }
 
@@ -2878,7 +2879,7 @@
                 // dispatches a click event AND calls el.click() — on a <label>,
                 // role=checkbox hitarea, or aria-expanded accordion each fires the
                 // toggle twice (check+uncheck / open+close = net nothing).
-                const isListOption = el.matches('label.block-list__option');
+                const isListOption = el.matches('label.block-list__option, div.block-list__option');
                 const isHitarea = el.matches('[role="checkbox"]');
                 const isToggle = el.getAttribute('aria-expanded') !== null;
                 sendStatus(isFlashcardGrid ? 'Flipping required card...' : isStepperNext ? 'Advancing process step...' : 'Completing interactive block...', '#f9e2af', true);

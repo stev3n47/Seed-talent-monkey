@@ -751,3 +751,20 @@ any of these journals). Two changes:
    (vis/locked/active/expanded/visited/fc-done/backface/checked/tab-order/
    dot-order/tries-cap) in `lastC1Skips`, appended to the Unknown-idle
    debug line and incident journal — next stall names the actual filter.
+
+## v9.64 — div-variant block-list options (C1750 RYTHM)
+
+4 more incidents (still 9.62): C1750 stalled with 4 `div.block-list__option`
+checklist rows — the interactives selector only covered `label.…` and
+`.block-list [role=checkbox]`, so a div-variant option with no inner
+role el was invisible. Added `div.block-list__option` to the selector,
+shared the label/div filter (a div containing a role=checkbox still defers
+to the role element), and widened `isListOption` so div options get a
+single `el.click()` — `simulateHumanClick`'s dispatched-click + el.click()
+pair would double-toggle a listener-based div (check+uncheck = no-op).
+
+Other incidents reviewed: C2044 Puffco = embed video player with
+"Forward seeking disabled" — retries bounded, honest skip. C2163 slide
+deck at 10/10 with next-step gated on content completion — the v9.63
+generic sweep should reach lazy-mounted leftovers. C1520 quiz answered
+Correct but locked — same below-fold class.
