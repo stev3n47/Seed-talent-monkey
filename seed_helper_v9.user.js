@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.68
+// @version       9.69
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.68';
+    const HELPER_VERSION = '9.69';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -640,7 +640,7 @@
                 const allowed = { 'required-response': 1, 'unknown-quiz': 1, 'ordering': 1, 'hotspot': 1, 'simulation': 1, 'external-embed': 1, 'storyline': 1 };
                 const d = e.data.detection || {};
                 if (!allowed[d.kind]) return;
-                storeIncident(e.data.incident, d.kind);
+                if (e.data.incident) storeIncident(e.data.incident, d.kind);
                 const label = String(d.label || d.kind).slice(0, 120);
                 const ev = d.evidence || {};
                 const evText = [ev.frame, ev.tag, ev.text, ev.cls, ev.src]
@@ -901,11 +901,15 @@
     });
 
     function reportUnhandledAdapter(detection) {
-        if (!detection || !detection.signature || unhandledSurfaces.has(detection.signature)) return false;
-        unhandledSurfaces.add(detection.signature);
-        const incident = buildIncident(detection.kind || 'unhandled', detection);
+        if (!detection || !detection.signature) return false;
+        const seen = unhandledSurfaces.has(detection.signature);
+        if (!seen) {
+            unhandledSurfaces.add(detection.signature);
+            try { GM_setValue('seed_unsupported_surfaces', JSON.stringify({ v: HELPER_VERSION, s: [...unhandledSurfaces].slice(-200) })); } catch (e) {}
+        }
+        const incident = seen ? null : buildIncident(detection.kind || 'unhandled', detection);
         try { window.top.postMessage({ type: 'SEED_UNHANDLED', detection, incident }, '*'); } catch(e) {}
-        sendDebug(`Unhandled surface: ${detection.kind} @ ${String(detection.signature).slice(0, 120)}`);
+        sendDebug(`Unhandled surface: ${detection.kind} @ ${String(detection.signature).slice(0, 120)}${seen ? ' (known)' : ''}`);
         return true;
     }
 
@@ -1721,6 +1725,13 @@
     const takeAgainRetries = {};
     const lastAttempt   = {};
     const unhandledSurfaces = new Set();
+    // Persist per version: a surface flagged unsupported once is skipped
+    // instantly on later runs of the SAME version; a new version re-probes
+    // (an adapter may have been added).
+    try {
+        const saved = JSON.parse(GM_getValue('seed_unsupported_surfaces', '{}'));
+        if (saved.v === HELPER_VERSION && Array.isArray(saved.s)) saved.s.forEach(x => unhandledSurfaces.add(x));
+    } catch (e) {}
     const terminalPages = new Set();
     const lastC1Skips  = [];   // per-tick: why each interactive was filtered —
                                // read by reportUnknownIdle so incidents name
@@ -2785,7 +2796,18 @@
                 const elTag = String(el.className || '').split(' ')[0].slice(0, 30);
                 const sk = r => { if (lastC1Skips.length < 24) lastC1Skips.push(r + ':' + elTag); return true; };
                 if (clickedInteractive) continue;
-                if (!isVisible(el)) { sk('vis'); continue; }
+                if (!isVisible(el)) {
+                    const r0 = el.getBoundingClientRect();
+                    const cx0 = r0.left + r0.width / 2;
+                    const s0 = window.getComputedStyle(el);
+                    const vr = el.getAttribute('aria-hidden') === 'true' ? 'aria'
+                        : (r0.width === 0 || r0.height === 0 || (r0.width <= 5 && r0.height <= 5)) ? 'rect'
+                        : (cx0 < -50 || cx0 > window.innerWidth + 50) ? 'x'
+                        : el.closest('[inert]') ? 'inert'
+                        : (s0.display === 'none' || s0.visibility === 'hidden' || s0.opacity === '0') ? 'style'
+                        : 'pe';
+                    sk('vis-' + vr); continue;
+                }
                 const locked = el.disabled || el.getAttribute('aria-disabled') === 'true';
                 if (locked) { sk('locked'); continue; }
 

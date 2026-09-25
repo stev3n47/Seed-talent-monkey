@@ -832,3 +832,23 @@ options = pointer-bound controls invisible to a click-only activation.
 Fix: all C1 claims use `simulateHumanClick` — pointer events for
 onPointerDown builds, single activation (no double-fire) for onClick
 builds, and its inner-input resolution covers the old label/div path.
+
+## v9.69 — vis sub-reasons + persisted unsupported-surface set (37-incident batch)
+
+v9.68's unified pointer-click did NOT fix the broad skip class (0/37) —
+but `skips:` telemetry now names the filters. Dominant reason `vis:`
+(~10 courses): candidates exist in DOM but `isVisible` rejects them.
+isVisible has no vertical-bounds check, so `vis:` can't mean
+"below fold" — it means hidden/inert/offscreen-x/zero-size. v9.69 splits
+it: `vis-aria / vis-rect / vis-x / vis-inert / vis-style / vis-pe` so
+the next incidents distinguish lazy-mount (style) from inactive-slide
+content (inert/x) from pointer-events-locked (pe).
+
+Also: `triedInteractives` ×1 entries (70 of ~85) suggest claims DO
+register where controls are genuinely live — the ×16 capped controls
+are concentrated in specific courses (Puffco, RYTHM steppers).
+
+Plus: the same Coassemble embed fired 9× in one run. `unhandledSurfaces`
+now persists per version (`seed_unsupported_surfaces` GM key) — a known-
+unsupported surface posts SEED_UNHANDLED with no incident, so queue
+instant-skips it without a re-download. New versions re-probe.
