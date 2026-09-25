@@ -812,3 +812,23 @@ tries, distinguishing "clicks never registered" from "never reached".
 Batch observations: RYTHM held 20+ `process-counter__btn` steppers +
 4 div options; Wyld confirmed all-flipped cards with a quiz wedge +
 unchecked block-list inputs; multi-video Puffco embed-play churn bounded.
+
+## v9.68 — the bare-el.click() single-fire regression (13-incident batch)
+
+0 done / 13 skipped — but the new `triedInteractives` data named the root
+cause: Puffco burned **15 tries each** on markers, tabs, and steppers;
+'Go to next slide' ×5; objections markers ×15. Clicks claimed but never
+registered.
+
+Root cause: the C1 claim path used **bare `el.click()`** for
+steppers/toggles/checkboxes because of a comment claiming
+`simulateHumanClick` "dispatches a click event AND calls el.click()".
+That was stale — the dispatched click was removed (DIAG 1790000963923)
+and it now sends pointerover/down/up + ONE el.click(). Bare el.click()
+emits NO pointer events, so Rise components bound to onPointerDown
+never see the click. The ×15-try pattern across markers/steps/tabs/
+options = pointer-bound controls invisible to a click-only activation.
+
+Fix: all C1 claims use `simulateHumanClick` — pointer events for
+onPointerDown builds, single activation (no double-fire) for onClick
+builds, and its inner-input resolution covers the old label/div path.

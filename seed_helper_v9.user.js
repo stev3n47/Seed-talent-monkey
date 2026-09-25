@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.67
+// @version       9.68
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
 // @match        *://*.seedtalent.com/*
 // @match        *://*.coassemble.com/*
@@ -20,7 +20,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.67';
+    const HELPER_VERSION = '9.68';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -2888,23 +2888,16 @@
                 } catch(e) {}
 
                 const isFlashcardGrid = el.matches('button.flashcard-side-flip__btn');
-                // Sequential steppers must fire exactly one click: the full synthetic
-                // sequence + native click double-fires and can skip a step's onStep,
-                // leaving the block permanently incomplete.
                 const isStepperNext = el.matches('button.carousel-controls-next, button.process-control--next, button.carousel-slider__control--next, button.block-carousel__control--next, button.block-flashcards-slider__arrow--next, button.process-counter__btn');
-                // Toggle controls must fire exactly once: simulateHumanClick
-                // dispatches a click event AND calls el.click() — on a <label>,
-                // role=checkbox hitarea, or aria-expanded accordion each fires the
-                // toggle twice (check+uncheck / open+close = net nothing).
-                const isListOption = el.matches('label.block-list__option, div.block-list__option');
-                const isHitarea = el.matches('[role="checkbox"]');
-                const isToggle = el.getAttribute('aria-expanded') !== null;
+                // simulateHumanClick = pointer sequence + ONE el.click() — no
+                // dispatched click event, so it can't double-fire. The old
+                // bare-el.click() single-fire branch was built on the stale
+                // assumption it did; bare clicks produce no pointer events and
+                // Rise components bound to onPointerDown (markers, steppers,
+                // tabs, options) never registered — the ×15 triedInteractives
+                // pattern across the 9.67 incident batch.
                 sendStatus(isFlashcardGrid ? 'Flipping required card...' : isStepperNext ? 'Advancing process step...' : 'Completing interactive block...', '#f9e2af', true);
-                setTimeout(() => {
-                    if (isStepperNext || isHitarea || isToggle) el.click();
-                    else if (isListOption) (el.querySelector('input[type="checkbox"], input[type="radio"]') || el).click();
-                    else simulateHumanClick(el);
-                }, 250 + Math.random() * 250);
+                setTimeout(() => simulateHumanClick(el), 250 + Math.random() * 250);
                 nextActionTime = now + 900;
                 stuckSince = 0;   // a claimed interactive is progress — don't
                 return;           // let its delay accumulate into a false idle
