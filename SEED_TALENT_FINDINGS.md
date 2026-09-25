@@ -852,3 +852,24 @@ Plus: the same Coassemble embed fired 9× in one run. `unhandledSurfaces`
 now persists per version (`seed_unsupported_surfaces` GM key) — a known-
 unsupported surface posts SEED_UNHANDLED with no incident, so queue
 instant-skips it without a re-download. New versions re-probe.
+
+## Session closeout — the stale-copy discovery (final batch, 35 incidents)
+
+Decisive forensic result: all 35 incidents self-report `helperVersion:
+9.69` yet contain ZERO `vis-` subcodes, ZERO `(known)` unhandled hits,
+and the Coassemble embed still re-fired 8x. Conclusion: **none of the
+v9.69 code ran** — the installed copy had its version strings bumped
+9.68->9.69 without receiving the code edits (same ghost as the hardcoded
+v9.59 badge). This also casts doubt on whether v9.68's pointer-click fix
+was ever genuinely exercised — the "fix didn't work" read from the
+37-batch is now suspect, not confirmed.
+
+Validated wins across the session: flashcard stall class dead,
+card-sort alt-pile self-correction, queue hygiene + auto-incident
+download, and the skips/triedInteractives telemetry pipeline.
+Outstanding: the `vis:` wall — controls present but failing isVisible —
+awaiting the v9.69 subcodes (inert/x/style/rect/pe/aria) to split it.
+
+**Handoff note:** on a new machine, install the script by pasting the
+full file — never hand-edit version lines. A version string without the
+code produces exactly this class of misleading telemetry.
