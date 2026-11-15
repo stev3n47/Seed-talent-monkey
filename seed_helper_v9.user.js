@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.69
+// @version       9.70
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.69';
+    const HELPER_VERSION = '9.70';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -149,6 +149,9 @@
     // Sniffer state lives here (section 13 uses it) so it initializes before the panel can.
     let sniffOn = GM_getValue('seed_sniff', false);
     const sniffEntries = [];
+    const recentNetworkMeta = []; // Always-on sanitized metadata ring buffer (even when SNIFF is off)
+    const aiCallLog = [];         // Sanitized OpenRouter request/fallback/latency ring buffer
+    let onSniffCount = null;
     // Bounded per-frame runtime error log for sanitized incident reports.
     const runtimeErrors = [];
     const idleIncidents = new Set();
@@ -253,16 +256,30 @@
         if (list.length > max) list.splice(0, list.length - max);
     }
 
-    // ── Cross-frame persisted journal + diag keys ────────────────
-    // Each frame owns one GM key (origin+pathname) holding its own entries —
-    // no read-modify-write races between frames. Merged at DUMP/DIAG time.
-    const frameKey = (location.origin + location.pathname).slice(0, 120);
-    const journalKey = 'seed_journal::' + frameKey;
-    const diagKey    = 'seed_diag::' + frameKey;
-    const frameJournal = (() => {
-        try { const a = JSON.parse(GM_getValue(journalKey, '[]')); return Array.isArray(a) ? a.slice(-150) : []; }
+    // ── Cross-frame persisted journal + diag keys (SPA-route aware) ──
+    // Each frame+route owns one GM key (origin+pathname) holding its own entries —
+    // no read-modify-write races between frames, and SPA route transitions don't
+    // clobber the landing route's snapshot. Merged at DUMP/DIAG time.
+    function computeFrameKey() {
+        return (location.origin + location.pathname).slice(0, 120);
+    }
+    let activeFrameKey = computeFrameKey();
+    function currentJournalKey() { return 'seed_journal::' + computeFrameKey(); }
+    function currentDiagKey()    { return 'seed_diag::' + computeFrameKey(); }
+    let frameJournal = (() => {
+        try { const a = JSON.parse(GM_getValue(currentJournalKey(), '[]')); return Array.isArray(a) ? a.slice(-150) : []; }
         catch(e) { return []; }
     })();
+    function syncFrameRoute() {
+        const nextKey = computeFrameKey();
+        if (nextKey !== activeFrameKey) {
+            activeFrameKey = nextKey;
+            try {
+                const a = JSON.parse(GM_getValue('seed_journal::' + nextKey, '[]'));
+                frameJournal = Array.isArray(a) ? a.slice(-150) : [];
+            } catch (e) { frameJournal = []; }
+        }
+    }
     let lastDiagWrite = 0;
 
     // Expire journal/diag keys whose newest entry is >7d old, once per load.
@@ -279,104 +296,255 @@
     } catch(e) {}
 
     if (window === window.top) whenBodyReady(() => {
-        const wrap = document.createElement('div');
+        // ── HUD root: Shadow DOM isolates panel markup/styles from the host LMS ──
+        const host = document.createElement('div');
+        host.id = 'seed-helper-root';
+        host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none;';
+        const shadow = host.attachShadow({ mode: 'open' });
+        const ui = id => shadow.getElementById(id);
+
+        const CSS = `
+* { box-sizing:border-box; margin:0; padding:0; }
+[hidden] { display:none !important; }
+.panel {
+  position:absolute; right:20px; bottom:20px; width:340px; max-height:82vh;
+  overflow-y:auto; overflow-x:hidden; pointer-events:auto;
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;
+  font-size:13px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  color:#cdd6f4; z-index:1;
+  background:rgba(24,24,37,0.78);
+  -webkit-backdrop-filter:blur(28px) saturate(170%);
+  backdrop-filter:blur(28px) saturate(170%);
+  border:1px solid rgba(255,255,255,0.09);
+  border-radius:18px;
+  box-shadow:0 16px 48px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.06);
+  animation:seedPanelIn 280ms cubic-bezier(0.32,0.72,0,1) both;
+  transform-origin:bottom right;
+}
+@keyframes seedPanelIn { from { opacity:0; transform:translateY(10px) scale(0.97); } to { opacity:1; transform:none; } }
+.hdr {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:11px 14px; cursor:grab; user-select:none; -webkit-user-select:none;
+  touch-action:none; position:sticky; top:0; z-index:2;
+  background:rgba(24,24,37,0.6);
+  -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px);
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.hdr.dragging { cursor:grabbing; }
+.hdr-left { display:flex; align-items:center; gap:8px; min-width:0; }
+.hdr-dot { width:8px; height:8px; border-radius:50%; flex:none; transition:background-color .3s ease,box-shadow .3s ease; }
+.st-stopped { background:#f38ba8; }
+.st-running { background:#a6e3a1; box-shadow:0 0 8px rgba(166,227,161,0.55); }
+.st-paused  { background:#f9e2af; box-shadow:0 0 8px rgba(249,226,175,0.45); }
+.hdr-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; color:#e6e9f5; white-space:nowrap; }
+.hdr-ver { font-weight:500; color:#9399b2; font-size:11px; margin-left:2px; }
+.hdr-right { display:flex; align-items:center; gap:6px; flex:none; }
+.chip {
+  appearance:none; border:1px solid rgba(255,255,255,0.09);
+  background:rgba(255,255,255,0.05); color:#bac2de;
+  font-family:inherit; font-size:10.5px; font-weight:600; letter-spacing:0.04em;
+  text-transform:uppercase; padding:4px 9px; border-radius:9px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:4px; white-space:nowrap;
+  transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .14s cubic-bezier(0.23,1,0.32,1);
+}
+.chip:hover { background:rgba(255,255,255,0.09); color:#e6e9f5; }
+.chip:active { transform:scale(0.95); }
+.chip:focus-visible { outline:2px solid #89b4fa; outline-offset:1px; }
+.chip-danger { color:#f38ba8; border-color:rgba(243,139,168,0.35); background:rgba(243,139,168,0.08); }
+.chip-danger:hover { background:rgba(243,139,168,0.16); color:#ff9eb0; }
+.chip-danger-solid { background:#f38ba8; border-color:#f38ba8; color:#1e1e2e; }
+.chip-danger-solid:hover { background:#ff9eb0; color:#1e1e2e; }
+.chip.is-on { background:rgba(137,220,235,0.14); color:#89dceb; border-color:rgba(137,220,235,0.4); }
+.chip-warn { color:#fab387; border-color:rgba(250,179,135,0.35); background:rgba(250,179,135,0.08); }
+.chip-primary { background:#89b4fa; border-color:#89b4fa; color:#1e1e2e; }
+.chip-primary:hover { background:#a9c4fb; color:#1e1e2e; }
+.icon-btn {
+  width:24px; height:24px; border-radius:8px; border:1px solid transparent;
+  background:transparent; color:#9399b2; font-size:13px; line-height:1; cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; font-family:inherit;
+  transition:background-color .15s ease,color .15s ease,transform .14s cubic-bezier(0.23,1,0.32,1);
+}
+.icon-btn:hover { background:rgba(255,255,255,0.08); color:#cdd6f4; }
+.icon-btn:active { transform:scale(0.92); }
+.panel-body { padding:12px 14px 14px; max-height:min(640px, calc(82vh - 52px)); overflow-y:auto; overflow-x:hidden; opacity:1;
+  transition:max-height .26s cubic-bezier(0.32,0.72,0,1),opacity .18s ease,padding .26s cubic-bezier(0.32,0.72,0,1); }
+.panel.min .panel-body { max-height:0; opacity:0; padding-top:0; padding-bottom:0; }
+.banner { display:flex; align-items:center; justify-content:space-between; gap:8px;
+  margin-bottom:10px; padding:8px 10px; border-radius:10px; font-size:11.5px; font-weight:600; }
+.banner.ok { background:rgba(166,227,161,0.1); border:1px solid rgba(166,227,161,0.3); color:#a6e3a1; }
+.banner.warn { background:rgba(249,226,175,0.1); border:1px solid rgba(249,226,175,0.3); color:#f9e2af; }
+.transport { display:flex; gap:8px; margin-bottom:10px; }
+.t-btn {
+  flex:1; display:flex; align-items:center; justify-content:center; gap:6px;
+  padding:9px 0; border:none; border-radius:11px;
+  font-family:inherit; font-size:12px; font-weight:700; letter-spacing:0.03em; cursor:pointer;
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1),background-color .15s ease,box-shadow .2s ease;
+}
+.t-btn:active { transform:scale(0.97); }
+.t-btn:focus-visible { outline:2px solid #89b4fa; outline-offset:2px; }
+.t-start { background:#40a02b; color:#eafff0; box-shadow:0 2px 10px rgba(64,160,43,0.35),inset 0 1px 0 rgba(255,255,255,0.18); }
+.t-start:hover { background:#49af33; }
+.t-secondary { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); color:#bac2de; }
+.t-secondary:hover { background:rgba(255,255,255,0.1); color:#e6e9f5; }
+.t-stop { color:#f38ba8; }
+.t-resume { color:#a6e3a1; }
+.status { font-size:12.5px; line-height:1.45; color:#bac2de; min-height:18px; transition:color .25s ease; padding:0 2px; }
+.tools { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+.tools .chip { padding:4px 8px; font-size:10px; }
+.badge { font-size:9.5px; font-weight:700; color:#89dceb; margin-left:2px; }
+.debug { margin-top:10px; padding:8px 10px; background:rgba(0,0,0,0.28);
+  border:1px solid rgba(255,255,255,0.05); border-radius:10px;
+  font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.5;
+  color:#9399b2; max-height:74px; overflow-y:auto; white-space:pre-line; word-break:break-word; }
+.matches { margin-top:10px; padding:10px 12px; background:rgba(249,226,175,0.05);
+  border:1px solid rgba(249,226,175,0.18); border-left:3px solid #f9e2af; border-radius:10px; }
+.matches-title { font-size:10.5px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase;
+  color:#f9e2af; margin-bottom:6px; }
+.matches-text { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:#a6e3a1;
+  white-space:pre-wrap; line-height:1.55; }
+.sheet-layer { position:fixed; inset:0; z-index:3; pointer-events:none; }
+.sheet-layer.open { pointer-events:auto; }
+.scrim { position:absolute; inset:0; background:rgba(8,8,14,0.55);
+  -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
+  opacity:0; transition:opacity .2s ease; }
+.sheet-layer.open .scrim { opacity:1; }
+.sheet { position:absolute; right:20px; bottom:20px; width:330px; max-height:76vh; overflow-y:auto;
+  background:rgba(30,30,46,0.94);
+  -webkit-backdrop-filter:blur(28px) saturate(170%); backdrop-filter:blur(28px) saturate(170%);
+  border:1px solid rgba(255,255,255,0.1); border-radius:18px;
+  box-shadow:0 24px 64px rgba(0,0,0,0.6);
+  padding:16px; transform:translateY(14px) scale(0.96); transform-origin:bottom right;
+  opacity:0; transition:transform .24s cubic-bezier(0.32,0.72,0,1),opacity .18s ease; }
+.sheet-layer.open .sheet { transform:none; opacity:1; }
+.sheet-head { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; }
+.sheet-ico { width:30px; height:30px; border-radius:9px; flex:none; display:flex; align-items:center;
+  justify-content:center; font-size:15px; }
+.sheet-ico.danger { background:rgba(243,139,168,0.14); color:#f38ba8; }
+.sheet-ico.key { background:rgba(203,166,247,0.14); color:#cba6f7; }
+.sheet-ico.info { background:rgba(137,180,250,0.14); color:#89b4fa; }
+.sheet-head h3 { font-size:14px; font-weight:650; letter-spacing:-0.01em; color:#e6e9f5; }
+.sheet-head .sub { font-size:11px; color:#9399b2; margin-top:1px; }
+.sheet-head .icon-btn { margin-left:auto; }
+.sheet-text { font-size:12px; line-height:1.55; color:#a6adc8; }
+.sheet-text b { color:#e6e9f5; font-weight:600; }
+.sheet-note { font-size:10.5px; line-height:1.5; color:#9399b2; margin-top:10px; }
+.sheet-foot { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+.field { margin-bottom:10px; }
+.field label { display:block; font-size:10px; font-weight:600; letter-spacing:0.05em;
+  text-transform:uppercase; color:#9399b2; margin-bottom:4px; }
+.field input { width:100%; padding:8px 10px; border-radius:9px;
+  border:1px solid rgba(255,255,255,0.1); background:rgba(0,0,0,0.25); color:#cdd6f4;
+  font-family:inherit; font-size:12.5px; outline:none;
+  transition:border-color .15s ease,box-shadow .15s ease; }
+.field input:focus { border-color:#89b4fa; box-shadow:0 0 0 3px rgba(137,180,250,0.18); }
+.sheet-status { font-size:11px; font-weight:600; margin-top:8px; min-height:14px; }
+.sheet-status.ok { color:#a6e3a1; }
+.sheet-status.err { color:#f38ba8; }
+.panel::-webkit-scrollbar, .sheet::-webkit-scrollbar, .debug::-webkit-scrollbar { width:8px; }
+.panel::-webkit-scrollbar-thumb, .sheet::-webkit-scrollbar-thumb, .debug::-webkit-scrollbar-thumb {
+  background:rgba(255,255,255,0.12); border-radius:4px; }
+.panel::-webkit-scrollbar-track, .sheet::-webkit-scrollbar-track, .debug::-webkit-scrollbar-track { background:transparent; }
+@media (prefers-reduced-motion: reduce) {
+  .panel, .sheet, .scrim, .panel-body, .t-btn, .chip, .icon-btn, .hdr-dot, .status { animation:none !important; transition:none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .panel { background:#1e1e2e; -webkit-backdrop-filter:none; backdrop-filter:none; }
+  .sheet { background:#1e1e2e; -webkit-backdrop-filter:none; backdrop-filter:none; }
+}
+@media (prefers-contrast: more) {
+  .panel, .sheet { border-color:rgba(255,255,255,0.28); }
+  .chip, .t-secondary { border-color:rgba(255,255,255,0.25); }
+}
+`;
+
+        shadow.innerHTML = `
+<div id="seed-panel" class="panel">
+  <div id="st-header" class="hdr">
+    <div class="hdr-left">
+      <span id="st-dot" class="hdr-dot st-stopped" title="Stopped"></span>
+      <span class="hdr-title">Seed Helper <span class="hdr-ver">v${HELPER_VERSION}</span></span>
+    </div>
+    <div class="hdr-right">
+      <button id="st-nuke" class="chip chip-danger" title="Instantly mark the entire course 100% complete and passed">NUKE</button>
+      <button id="st-queue" class="chip" title="Queue mode: auto-run every outstanding course in the catalog, back-to-back">QUEUE</button>
+      <button id="st-min" class="icon-btn" title="Collapse panel" aria-label="Collapse panel">–</button>
+    </div>
+  </div>
+  <div class="panel-body">
+    <div id="st-banner" class="banner ok" hidden></div>
+    <div id="st-btn-row" class="transport">
+      <button id="st-start" class="t-btn t-start">▶ START</button>
+      <button id="st-pause" class="t-btn t-secondary" hidden>⏸ PAUSE</button>
+      <button id="st-stop" class="t-btn t-secondary t-stop" hidden>⏹ STOP</button>
+      <button id="st-resume" class="t-btn t-secondary t-resume" hidden>▶ RESUME</button>
+      <button id="st-stop2" class="t-btn t-secondary t-stop" hidden>⏹ STOP</button>
+    </div>
+    <div id="st-status" class="status">Stopped. Navigate to your course then click START.</div>
+    <div class="tools">
+      <button id="st-sniff" class="chip chip-tool" title="Record network traffic (find the completion API)">SNIFF<span id="st-sniff-count" class="badge"></span></button>
+      <button id="st-dump" class="chip chip-tool" title="Download captured requests + recent network metadata as JSON">DUMP</button>
+      <button id="st-diag" class="chip chip-tool" title="Download cross-frame state snapshot + journal + AI/network telemetry (no sniff needed)">DIAG</button>
+      <button id="st-incident" class="chip chip-tool chip-warn" title="Download the latest sanitized stall report" hidden>INCIDENT</button>
+    </div>
+    <div class="tools">
+      <button id="st-summary" class="chip chip-tool" title="Generate an AI summary of collected course text">SUMMARY</button>
+      <button id="st-logs" class="chip chip-tool" title="Open performance logs and quiz history">LOGS</button>
+      <button id="st-key" class="chip chip-tool" title="Set or remove the local OpenRouter API key">KEY</button>
+      <button id="st-info" class="chip chip-tool" title="Raffle/giveaway entry details — used to fill external entry forms">INFO</button>
+    </div>
+    <div id="st-debug" class="debug"></div>
+    <div id="st-matches" class="matches" hidden>
+      <div class="matches-title">Matching answers</div>
+      <pre id="st-matches-text" class="matches-text"></pre>
+    </div>
+  </div>
+</div>
+<div id="st-sheet-layer" class="sheet-layer" tabindex="-1"></div>`;
+        try {
+            const sheet = new CSSStyleSheet();
+            sheet.replaceSync(CSS);
+            shadow.adoptedStyleSheets = [sheet];
+        } catch (_) {
+            const st = document.createElement('style');
+            st.textContent = CSS;
+            shadow.appendChild(st);
+        }
+        document.body.appendChild(host);
+
         let courseTextAccumulator = new Set();
         let latestIncident = null;
-        const dbgLines = [];   // rolling last-N debug lines for the panel
-        wrap.innerHTML = `
-        <div id="seed-panel" style="position:fixed;bottom:20px;right:20px;z-index:999999;
-             background:#1e1e2e;color:#cdd6f4;padding:14px 18px;border-radius:12px;
-             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-             box-shadow:0 4px 20px rgba(0,0,0,0.5);border:1px solid #45475a;width:320px;
-             max-height:80vh;overflow-y:auto;">
+        const dbgLines = [];
 
-          <div id="seed-panel-header" style="font-weight:bold;margin-bottom:10px;font-size:14px;color:#89b4fa;
-               display:flex;align-items:center;justify-content:space-between;cursor:grab;user-select:none;">
-            <span>🤖 Seed Helper v${HELPER_VERSION}</span>
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-                <button id="st-nuke" style="background:#313244;color:#f38ba8;border:1px solid #f38ba8;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Instantly complete the entire course">🚀 NUKE</button>
-                <button id="st-summary" style="background:#313244;color:#f9e2af;border:1px solid #f9e2af;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📝 SUMMARY</button>
-                <button id="st-key" style="background:#313244;color:#cba6f7;border:1px solid #cba6f7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Set or remove the local OpenRouter API key">KEY</button>
-                <button id="st-info" style="background:#313244;color:#f2d5cf;border:1px solid #f2d5cf;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Raffle/giveaway entry details — used to fill external entry forms">👤 INFO</button>
-                <button id="st-logs" style="background:#313244;color:#a6e3a1;border:1px solid #a6e3a1;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">📊 LOGS</button>
-                <button id="st-sniff" style="background:#313244;color:#89dceb;border:1px solid #89dceb;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Record network traffic (find the completion API)">📡 SNIFF</button>
-                <button id="st-dump" style="background:#313244;color:#94e2d5;border:1px solid #94e2d5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download captured requests as JSON">⬇ DUMP</button>
-                <button id="st-diag" style="background:#313244;color:#f5c2e7;border:1px solid #f5c2e7;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download cross-frame state snapshot + action journal (no sniff needed)">⬇ DIAG</button>
-                <button id="st-incident" style="display:none;background:#313244;color:#fab387;border:1px solid #fab387;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Download the latest sanitized stall report">⬇ INCIDENT</button>
-                <button id="st-queue" style="background:#313244;color:#b4befe;border:1px solid #b4befe;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;" title="Queue mode: auto-run every outstanding course in the catalog, back-to-back">📋 QUEUE</button>
-                <span id="st-dot" style="height:10px;width:10px;background:#f38ba8;border-radius:50%;display:inline-block;" title="Stopped"></span>
-            </div>
-          </div>
-
-          <!-- Button row — changes based on state -->
-          <div id="st-btn-row" style="display:flex;gap:8px;margin-bottom:10px;">
-            <!-- START state: one big green button -->
-            <button id="st-start" style="
-                flex:1;padding:8px 0;background:#40a02b;border:none;border-radius:8px;
-                color:#fff;font-size:13px;font-weight:bold;cursor:pointer;">
-              ▶ START
-            </button>
-            <!-- RUNNING state: pause + stop -->
-            <button id="st-pause" style="
-                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
-                color:#cdd6f4;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
-              ⏸ PAUSE
-            </button>
-            <button id="st-stop" style="
-                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
-                color:#f38ba8;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
-              ⏹ STOP
-            </button>
-            <!-- PAUSED state: resume + stop -->
-            <button id="st-resume" style="
-                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
-                color:#a6e3a1;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
-              ▶ RESUME
-            </button>
-            <button id="st-stop2" style="
-                flex:1;padding:8px 0;background:#313244;border:1px solid #585b70;border-radius:8px;
-                color:#f38ba8;font-size:12px;font-weight:bold;cursor:pointer;display:none;">
-              ⏹ STOP
-            </button>
-          </div>
-
-          <div id="st-status" style="font-size:13px;color:#bac2de;line-height:1.4;">Stopped. Navigate to your course then click START.</div>
-          <div id="st-debug"  style="font-size:11px;color:#9399b2;margin-top:8px;word-break:break-word;max-height:60px;overflow-y:auto;white-space:pre-line;"></div>
-
-          <div id="st-matches" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #45475a;">
-            <div style="font-size:11px;font-weight:bold;color:#f9e2af;margin-bottom:6px;">💡 MATCHING ANSWERS:</div>
-            <pre id="st-matches-text" style="font-size:11px;color:#a6e3a1;font-family:monospace;white-space:pre-wrap;margin:0;line-height:1.6;"></pre>
-          </div>
-        </div>`;
-        document.body.appendChild(wrap);
-
-        const dot     = document.getElementById('st-dot');
-        const startBtn  = document.getElementById('st-start');
-        const pauseBtn  = document.getElementById('st-pause');
-        const stopBtn   = document.getElementById('st-stop');
-        const resumeBtn = document.getElementById('st-resume');
-        const stop2Btn  = document.getElementById('st-stop2');
-        const incidentBtn = document.getElementById('st-incident');
+        const dot        = ui('st-dot');
+        const startBtn   = ui('st-start');
+        const pauseBtn   = ui('st-pause');
+        const stopBtn    = ui('st-stop');
+        const resumeBtn  = ui('st-resume');
+        const stop2Btn   = ui('st-stop2');
+        const incidentBtn = ui('st-incident');
+        const panel      = ui('seed-panel');
+        const header     = ui('st-header');
+        const minBtn     = ui('st-min');
+        const sheetLayer = ui('st-sheet-layer');
 
         function applyState(newState) {
             state = newState;
-            // Reset all buttons hidden
-            [startBtn, pauseBtn, stopBtn, resumeBtn, stop2Btn].forEach(b => b.style.display = 'none');
-
+            [startBtn, pauseBtn, stopBtn, resumeBtn, stop2Btn].forEach(b => b.hidden = true);
             if (state === 'stopped') {
-                startBtn.style.display = 'flex';
-                dot.style.background = '#f38ba8';
+                startBtn.hidden = false;
+                dot.className = 'hdr-dot st-stopped';
                 dot.title = 'Stopped';
                 updateStatus('Stopped. Navigate to your course then click START.', '#bac2de');
             } else if (state === 'running') {
-                pauseBtn.style.display = 'flex';
-                stopBtn.style.display = 'flex';
-                dot.style.background = '#a6e3a1';
+                pauseBtn.hidden = false;
+                stopBtn.hidden = false;
+                dot.className = 'hdr-dot st-running';
                 dot.title = 'Running';
             } else if (state === 'paused') {
-                resumeBtn.style.display = 'flex';
-                stop2Btn.style.display = 'flex';
-                dot.style.background = '#f9e2af';
+                resumeBtn.hidden = false;
+                stop2Btn.hidden = false;
+                dot.className = 'hdr-dot st-paused';
                 dot.title = 'Paused';
                 updateStatus('Paused. Click RESUME to continue.', '#f9e2af');
             }
@@ -391,93 +559,152 @@
 
         // Queue mode: run every outstanding course back-to-back. The flag
         // persists in GM storage so navigation auto-resumes the engine.
-        const queueBtn = document.getElementById('st-queue');
+        const queueBtn = ui('st-queue');
+        function refreshQueueBtn() { try { queueBtn.classList.toggle('is-on', queueActive()); } catch(e) {} }
         queueBtn.addEventListener('click', () => {
             if (queueActive()) {
                 setQueue({ active: false });
                 applyState('paused');
                 updateStatus('Queue stopped.', '#f9e2af');
+                refreshQueueBtn();
                 return;
             }
             setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false });
             applyState('running');
             updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
+            refreshQueueBtn();
             if (!/seedtalent\.com$/.test(location.hostname) || !/^\/courses/.test(location.pathname)) {
                 try { location.assign('https://app.seedtalent.com/courses'); } catch(e) { location.href = 'https://app.seedtalent.com/courses'; }
             }
         });
+        setInterval(refreshQueueBtn, 4000);
+        refreshQueueBtn();
         // Queue survives navigation: auto-resume the engine on the next page.
         try {
             if (queueActive()) setTimeout(() => { if (state === 'stopped') applyState('running'); }, 1500);
         } catch(e) {}
 
-        // Draggable panel logic
-        const panel = document.getElementById('seed-panel');
-        const header = document.getElementById('seed-panel-header');
-        let isDragging = false, startX, startY, initialX, initialY;
-        header.addEventListener('mousedown', (e) => {
-            if (e.target.tagName === 'BUTTON') return;
-            isDragging = true;
-            header.style.cursor = 'grabbing';
-            const rect = panel.getBoundingClientRect();
-            startX = e.clientX;
-            startY = e.clientY;
-            initialX = rect.left;
-            initialY = rect.top;
+        // ── Sheets (NUKE confirm / KEY / INFO) ──
+        function closeSheets() { sheetLayer.classList.remove('open'); sheetLayer.innerHTML = ''; }
+        function openSheet(html) {
+            sheetLayer.innerHTML = '<div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true">' + html + '</div>';
+            sheetLayer.classList.add('open');
+            sheetLayer.querySelector('.scrim').addEventListener('click', closeSheets);
+            sheetLayer.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeSheets));
+            sheetLayer.onkeydown = e => { if (e.key === 'Escape') closeSheets(); };
+            const f = sheetLayer.querySelector('input') || sheetLayer.querySelector('button');
+            if (f) setTimeout(() => f.focus(), 60);
+        }
+        function showBanner(msg, sticky) {
+            const b = ui('st-banner');
+            if (!b) return;
+            b.className = 'banner ok';
+            b.innerHTML = '<span>' + msg + '</span>' + (sticky ? '<button class="chip" id="st-banner-x">Reload</button>' : '');
+            b.hidden = false;
+            const rx = b.querySelector('#st-banner-x');
+            if (rx) rx.addEventListener('click', () => location.reload());
+            if (!sticky) setTimeout(() => { b.hidden = true; }, 9000);
+        }
+        function escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
 
-            // Switch from bottom/right to left/top to avoid resize jumping
-            panel.style.bottom = 'auto';
-            panel.style.right = 'auto';
-            panel.style.left = initialX + 'px';
-            panel.style.top = initialY + 'px';
-        });
-        document.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            panel.style.left = (initialX + dx) + 'px';
-            panel.style.top = (initialY + dy) + 'px';
-        });
-        document.addEventListener('mouseup', () => {
-            if (isDragging) {
-                isDragging = false;
-                header.style.cursor = 'grab';
+        function doNuke() {
+            window.postMessage({ type: 'SEED_NUKE' }, '*');
+            const iframes = document.querySelectorAll('iframe');
+            for (const frame of iframes) {
+                try { frame.contentWindow.postMessage({ type: 'SEED_NUKE' }, '*'); } catch(e) {}
             }
+            showBanner('Nuke payload delivered! The course is marked 100% complete. Refresh the page or return to the dashboard.', true);
+        }
+        ui('st-nuke').addEventListener('click', () => {
+            openSheet(`
+              <div class="sheet-head"><span class="sheet-ico danger">⚠</span>
+                <div><h3>NUKE course</h3><div class="sub">Instant completion</div></div>
+                <button class="icon-btn" data-close title="Close">✕</button></div>
+              <p class="sheet-text">This will instantly mark the <b>entire course</b> — including quizzes — as <b>100% complete and passed</b> in the database.</p>
+              <div class="sheet-foot">
+                <button class="chip" data-close>Cancel</button>
+                <button class="chip chip-danger-solid" id="sh-nuke-go">NUKE IT</button>
+              </div>`);
+            sheetLayer.querySelector('#sh-nuke-go').addEventListener('click', () => { closeSheets(); doNuke(); });
         });
 
-        document.getElementById('st-key').addEventListener('click', () => {
-            const input = prompt('Enter your replacement OpenRouter API key. Leave blank to remove the saved key.', '');
-            if (input === null) return;
-            const value = input.trim();
-            if (!value) {
-                GM_setValue(OPENROUTER_KEY_STORAGE, '');
-                updateStatus('OpenRouter key removed.', '#f38ba8');
-            } else {
-                GM_setValue(OPENROUTER_KEY_STORAGE, value);
+        // ── KEY sheet (replaces prompt()) ──
+        ui('st-key').addEventListener('click', () => {
+            const has = !!getOpenRouterApiKey();
+            openSheet(`
+              <div class="sheet-head"><span class="sheet-ico key">⚿</span>
+                <div><h3>OpenRouter API key</h3><div class="sub">${has ? 'A key is saved on this device.' : 'No key saved — quiz solving will pause.'}</div></div>
+                <button class="icon-btn" data-close title="Close">✕</button></div>
+              <div class="field"><label for="sh-key-input">Replacement API key</label>
+                <input id="sh-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…"></div>
+              <p class="sheet-note">Stored only in this browser via Tampermonkey storage. Sent solely to OpenRouter when solving quizzes — never logged or exported.</p>
+              <div class="sheet-foot">
+                <button class="chip" id="sh-key-clear">Remove key</button>
+                <button class="chip chip-primary" id="sh-key-save">Save key</button>
+              </div>
+              <div class="sheet-status" id="sh-key-status"></div>`);
+            const inp = sheetLayer.querySelector('#sh-key-input');
+            const stat = sheetLayer.querySelector('#sh-key-status');
+            sheetLayer.querySelector('#sh-key-save').addEventListener('click', () => {
+                const v = inp.value.trim();
+                if (!v) { stat.textContent = 'Paste a key first — or use Remove key.'; stat.className = 'sheet-status err'; return; }
+                GM_setValue(OPENROUTER_KEY_STORAGE, v);
+                inp.value = '';
+                stat.textContent = 'OpenRouter key saved locally.'; stat.className = 'sheet-status ok';
                 updateStatus('OpenRouter key saved locally.', '#a6e3a1');
-            }
+            });
+            sheetLayer.querySelector('#sh-key-clear').addEventListener('click', () => {
+                GM_setValue(OPENROUTER_KEY_STORAGE, '');
+                stat.textContent = 'OpenRouter key removed.'; stat.className = 'sheet-status err';
+                updateStatus('OpenRouter key removed.', '#f38ba8');
+            });
         });
 
-        document.getElementById('st-info').addEventListener('click', () => {
+        // ── INFO sheet (replaces 11× prompt()) ──
+        const PROFILE_DEFS = [
+            ['name','Full name'], ['email','Email'], ['phone','Phone'],
+            ['store','Store / dispensary'], ['address','Street address'],
+            ['city','City'], ['state','State'], ['zip','ZIP code'],
+            ['country','Country (defaults to United States)'],
+            ['dob','Date of birth (MM/DD/YYYY)'], ['instagram','Instagram / social handle'],
+        ];
+        ui('st-info').addEventListener('click', () => {
             const cur = getProfile();
-            const defs = [
-                ['name', 'Full name'], ['email', 'Email'], ['phone', 'Phone'],
-                ['store', 'Store / dispensary'], ['address', 'Street address'],
-                ['city', 'City'], ['state', 'State'], ['zip', 'ZIP code'],
-                ['country', 'Country (defaults to United States)'],
-                ['dob', 'Date of birth (MM/DD/YYYY)'], ['instagram', 'Instagram / social handle'],
-            ];
-            const next = {};
-            for (const [k, lbl] of defs) {
-                const v = prompt(lbl + ' (leave blank to skip):', cur[k] || '');
-                if (v === null) return;
-                if (v.trim()) next[k] = v.trim();
-            }
-            GM_setValue(PROFILE_KEY, JSON.stringify(next));
-            updateStatus('Raffle profile saved — ' + Object.keys(next).length + ' field(s).', '#a6e3a1');
+            const fields = PROFILE_DEFS.map(([k, lbl]) =>
+                `<div class="field"><label>${lbl}</label><input data-pk="${k}" type="text" value="${escAttr(cur[k] || '')}"></div>`).join('');
+            openSheet(`
+              <div class="sheet-head"><span class="sheet-ico info">👤</span>
+                <div><h3>Raffle / giveaway profile</h3><div class="sub">Used to fill external entry forms (e.g. Paperform).</div></div>
+                <button class="icon-btn" data-close title="Close">✕</button></div>
+              ${fields}
+              <p class="sheet-note">Blank fields are removed on save. Stored locally in this browser only.</p>
+              <div class="sheet-foot">
+                <button class="chip" id="sh-info-clear">Clear all</button>
+                <button class="chip chip-primary" id="sh-info-save">Save profile</button>
+              </div>
+              <div class="sheet-status" id="sh-info-status"></div>`);
+            const stat = sheetLayer.querySelector('#sh-info-status');
+            sheetLayer.querySelector('#sh-info-save').addEventListener('click', () => {
+                const next = {};
+                sheetLayer.querySelectorAll('input[data-pk]').forEach(inp => {
+                    const v = inp.value.trim();
+                    if (v) next[inp.getAttribute('data-pk')] = v;
+                });
+                GM_setValue(PROFILE_KEY, JSON.stringify(next));
+                const n = Object.keys(next).length;
+                stat.textContent = 'Raffle profile saved — ' + n + ' field(s).';
+                stat.className = 'sheet-status ok';
+                updateStatus('Raffle profile saved — ' + n + ' field(s).', '#a6e3a1');
+            });
+            sheetLayer.querySelector('#sh-info-clear').addEventListener('click', () => {
+                GM_setValue(PROFILE_KEY, '{}');
+                sheetLayer.querySelectorAll('input[data-pk]').forEach(inp => { inp.value = ''; });
+                stat.textContent = 'Profile cleared.'; stat.className = 'sheet-status err';
+            });
         });
 
-        document.getElementById('st-summary').addEventListener('click', () => {
+        // ── SUMMARY (verbatim behavior) ──
+        ui('st-summary').addEventListener('click', () => {
             const fullText = Array.from(courseTextAccumulator).join('\\n\\n');
             if (fullText.length < 200) {
                 alert('Not enough course text collected yet. Let the script run through a few lessons first.');
@@ -512,13 +739,25 @@
                 if (win) {
                     win.document.write(`<html><head><title>Course Summary</title>
                     <style>
-                        body { font-family: sans-serif; line-height: 1.6; padding: 30px; max-width: 800px; margin: auto; background: #1e1e2e; color: #cdd6f4; }
-                        h1, h2, h3 { color: #89b4fa; }
-                        strong { color: #a6e3a1; }
+                        :root { color-scheme: dark; }
+                        * { box-sizing: border-box; }
+                        body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif; background: #16161e; color: #cdd6f4; margin: 0; padding: 48px 24px 80px; line-height: 1.65; }
+                        .wrap { max-width: 720px; margin: 0 auto; }
+                        h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.015em; color: #89b4fa; margin: 0 0 20px; }
+                        .content { background: rgba(49,49,68,0.55); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 24px 28px; font-size: 14.5px; color: #bac2de; }
+                        .content h1, .content h2, .content h3 { color: #89b4fa; margin-top: 1.4em; }
+                        .content h1:first-child, .content h2:first-child, .content h3:first-child { margin-top: 0; }
+                        .content strong { color: #a6e3a1; }
+                        .content ul { padding-left: 22px; }
+                        .content li { margin: 4px 0; }
+                        .copy { position: fixed; top: 16px; right: 16px; background: rgba(137,180,250,0.12); color: #89b4fa; border: 1px solid rgba(137,180,250,0.35); border-radius: 9px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; font-family: inherit; cursor: pointer; transition: background-color .15s ease, transform .14s cubic-bezier(0.23,1,0.32,1); }
+                        .copy:hover { background: rgba(137,180,250,0.2); }
+                        .copy:active { transform: scale(0.96); }
                     </style>
                     </head><body>
-                    <h1>Course Summary</h1>
-                    <div>${htmlText}</div>
+                    <button class="copy" onclick="navigator.clipboard.writeText(document.querySelector('.content').innerText);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+                    <div class="wrap"><h1>📄 Course Summary</h1>
+                    <div class="content">${htmlText}</div></div>
                     </body></html>`);
                     win.document.close();
                 }
@@ -527,7 +766,8 @@
             });
         });
 
-        document.getElementById('st-logs').addEventListener('click', () => {
+        // ── LOGS (verbatim behavior) ──
+        ui('st-logs').addEventListener('click', () => {
             if (!logsWindow || logsWindow.closed) {
                 logsWindow = window.open('', 'SeedLogsWindow');
                 if (logsWindow) {
@@ -540,28 +780,16 @@
                 logsWindow.document.getElementById('logs-body').innerHTML = renderStatsBody(logsWindow.historyData);
             }
         });
-        document.getElementById('st-nuke').addEventListener('click', () => {
-            if (confirm('WARNING: This will instantly mark the entire course (including quizzes) as 100% complete and passed in the database. Are you sure?')) {
-                window.postMessage({ type: 'SEED_NUKE' }, '*');
-                const iframes = document.querySelectorAll('iframe');
-                for (const frame of iframes) {
-                    try {
-                        frame.contentWindow.postMessage({ type: 'SEED_NUKE' }, '*');
-                    } catch(e) {}
-                }
-                alert('Nuke payload delivered! The course is marked 100% complete. Please refresh the page or return to the dashboard.');
-            }
-        });
 
         // ── Sniffer controls (section 13 does the actual capture) ──
-        const sniffBtn = document.getElementById('st-sniff');
-        const dumpBtn  = document.getElementById('st-dump');
-        if (sniffOn) { sniffBtn.style.background = '#89dceb'; sniffBtn.style.color = '#1e1e2e'; }
+        const sniffBtn = ui('st-sniff');
+        const dumpBtn  = ui('st-dump');
+        if (sniffOn) sniffBtn.classList.add('is-on');
+        onSniffCount = n => { const b = ui('st-sniff-count'); if (b) b.textContent = (sniffOn && n > 0) ? ' ' + n : ''; };
         sniffBtn.addEventListener('click', () => {
             sniffOn = !sniffOn;
             GM_setValue('seed_sniff', sniffOn);
-            sniffBtn.style.background = sniffOn ? '#89dceb' : '#313244';
-            sniffBtn.style.color = sniffOn ? '#1e1e2e' : '#89dceb';
+            sniffBtn.classList.toggle('is-on', sniffOn);
             // Relay to this window's own listener (forwards deeper) + direct iframes
             window.postMessage({ type: 'SEED_SNIFF_SET', on: sniffOn }, '*');
             document.querySelectorAll('iframe').forEach(f => {
@@ -574,7 +802,9 @@
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = name;
+            document.body.appendChild(a);
             a.click();
+            setTimeout(() => { try { URL.revokeObjectURL(a.href); a.remove(); } catch(e) {} }, 500);
         };
         // Ask every frame to snapshot its state into GM, wait briefly, then
         // bundle network events + merged cross-frame journal + per-frame diags.
@@ -586,38 +816,170 @@
             updateStatus('Collecting diagnostics…', '#94e2d5');
             setTimeout(() => {
                 const journal = mergedJournal();
-                const diags = collectDiags();
+                const bundle = collectDiags(Date.now());
+                const liveFrames = Object.keys(bundle.live).length;
+                const histFrames = Object.keys(bundle.historical).length;
                 const payload = {
-                    meta: { helperVersion: HELPER_VERSION, runId: GM_getValue('seed_runid', ''), dumpedAt: new Date().toISOString(), events: sniffEntries.length, journalEntries: journal.length, frames: Object.keys(diags).length },
+                    meta: {
+                        helperVersion: HELPER_VERSION,
+                        runId: String(GM_getValue('seed_runid', '') || ''),
+                        dumpedAt: new Date().toISOString(),
+                        sniffActive: sniffOn,
+                        events: sniffEntries.length,
+                        recentNetwork: recentNetworkMeta.length,
+                        aiCalls: aiCallLog.length,
+                        journalEntries: journal.length,
+                        liveFrames, historicalFrames: histFrames,
+                        frames: liveFrames + histFrames,
+                        helper: 'seed_helper_v9'
+                    },
+                    config: {
+                        hasOpenRouterKey: !!getOpenRouterApiKey(),
+                        autoSubmitQuiz: AUTO_SUBMIT_QUIZ,
+                        models: MODELS.map(m => m.id)
+                    },
                     events: withEvents ? sniffEntries : undefined,
+                    recentNetwork: recentNetworkMeta.slice(-150),
+                    aiCalls: aiCallLog.slice(-40),
                     journal,
-                    diags
+                    diags: bundle.live,
+                    historicalDiags: bundle.historical
                 };
                 downloadJson('seed_' + (withEvents ? 'sniff' : 'diag') + '_' + Date.now() + '.json', payload);
                 try {
                     GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8766/" + (withEvents ? 'sniff' : 'diag'),
                         data: JSON.stringify(payload), headers: { "Content-Type": "application/json" } });
                 } catch (e3) {}
-                updateStatus((withEvents ? 'Dumped ' + sniffEntries.length + ' requests + ' : 'Diag: ') + journal.length + ' journal entries, ' + Object.keys(diags).length + ' frames.', '#94e2d5');
+                updateStatus((withEvents ? 'Dumped ' + sniffEntries.length + ' requests + ' : 'Diag: ') + journal.length + ' journal entries, ' + (liveFrames + histFrames) + ' frames.', '#94e2d5');
             }, 700);
         };
         dumpBtn.addEventListener('click', () => collectAndDownload(true));
-        document.getElementById('st-diag').addEventListener('click', () => collectAndDownload(false));
+        ui('st-diag').addEventListener('click', () => collectAndDownload(false));
         incidentBtn.addEventListener('click', () => {
             if (!latestIncident) return;
             const safeType = String(latestIncident.type || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'unknown';
             downloadJson('seed_incident_' + safeType + '_' + Date.now() + '.json', latestIncident);
         });
 
+        // ── Drag: pointer capture + velocity + spring settle + rubber-band edges ──
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        let drag = null, springRaf = 0;
+        function killSpring() { if (springRaf) { cancelAnimationFrame(springRaf); springRaf = 0; } }
+        function panelSize() { return { w: panel.offsetWidth || 340, h: panel.offsetHeight || 200 }; }
+        function clampPanel(x, y) {
+            const { w, h } = panelSize(), m = 8;
+            return {
+                x: Math.min(Math.max(x, m), Math.max(m, window.innerWidth - w - m)),
+                y: Math.min(Math.max(y, m), Math.max(m, window.innerHeight - h - m))
+            };
+        }
+        function rubberAxis(v, lo, hi) {
+            const C = 0.55;
+            if (v < lo) { const over = lo - v, dim = hi - lo; return lo - (over * dim * C) / (dim + C * over); }
+            if (v > hi) { const over = v - hi, dim = hi - lo; return hi + (over * dim * C) / (dim + C * over); }
+            return v;
+        }
+        function currentPanelPos() { const r = panel.getBoundingClientRect(); return { x: r.left, y: r.top }; }
+        function placePanel(x, y, save) {
+            const p = clampPanel(x, y);
+            panel.style.right = 'auto'; panel.style.bottom = 'auto';
+            panel.style.left = p.x + 'px'; panel.style.top = p.y + 'px';
+            if (save) { try { GM_setValue('seed_panel_pos', JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) })); } catch(_) {} }
+            return p;
+        }
+        function springTo(tx, ty, vx0, vy0) {
+            killSpring();
+            const start = currentPanelPos();
+            let x = start.x, y = start.y, vx = vx0 || 0, vy = vy0 || 0;
+            const K = 380, C = 39, last = { t: performance.now() };
+            const step = (now) => {
+                const dt = Math.min(0.05, (now - last.t) / 1000); last.t = now;
+                vx += (tx - x) * K * dt; vy += (ty - y) * K * dt;
+                const damp = Math.exp(-C * dt);
+                vx *= damp; vy *= damp;
+                x += vx * dt; y += vy * dt;
+                const p = clampPanel(x, y);
+                panel.style.left = p.x + 'px'; panel.style.top = p.y + 'px';
+                if (Math.abs(tx - p.x) < 0.6 && Math.abs(ty - p.y) < 0.6 && Math.abs(vx) < 8 && Math.abs(vy) < 8) {
+                    placePanel(tx, ty, true); springRaf = 0; return;
+                }
+                springRaf = requestAnimationFrame(step);
+            };
+            springRaf = requestAnimationFrame(step);
+        }
+        // Restore persisted geometry / collapsed state
+        try {
+            const pos = JSON.parse(GM_getValue('seed_panel_pos', 'null'));
+            if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) placePanel(pos.x, pos.y, false);
+            if (GM_getValue('seed_panel_min', false)) { panel.classList.add('min'); minBtn.textContent = '+'; minBtn.title = 'Expand panel'; }
+        } catch(_) {}
+        minBtn.addEventListener('click', () => {
+            const min = panel.classList.toggle('min');
+            minBtn.textContent = min ? '+' : '–';
+            minBtn.title = min ? 'Expand panel' : 'Collapse panel';
+            try { GM_setValue('seed_panel_min', min); } catch(_) {}
+        });
+        header.addEventListener('pointerdown', (e) => {
+            if (e.button !== undefined && e.button !== 0) return;
+            if (e.target.closest('button')) return;
+            killSpring();
+            try { header.setPointerCapture(e.pointerId); } catch(_) {}
+            const p = currentPanelPos();
+            drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, bx: p.x, by: p.y, moved: false, samples: [] };
+        });
+        header.addEventListener('pointermove', (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+            if (!drag.moved) {
+                if (Math.hypot(dx, dy) < 4) return;
+                drag.moved = true;
+                header.classList.add('dragging');
+            }
+            const now = performance.now();
+            drag.samples.push({ x: e.clientX, y: e.clientY, t: now });
+            if (drag.samples.length > 6) drag.samples.shift();
+            const { w, h } = panelSize(), m = 8;
+            const rx = rubberAxis(drag.bx + dx, m, window.innerWidth - w - m);
+            const ry = rubberAxis(drag.by + dy, m, window.innerHeight - h - m);
+            panel.style.right = 'auto'; panel.style.bottom = 'auto';
+            panel.style.left = rx + 'px'; panel.style.top = ry + 'px';
+        });
+        function endDrag(e) {
+            if (!drag || (e && e.pointerId !== drag.id)) return;
+            header.classList.remove('dragging');
+            try { header.releasePointerCapture(drag.id); } catch(_) {}
+            const d = drag; drag = null;
+            if (!d.moved) return;
+            let vx = 0, vy = 0;
+            const s = d.samples;
+            if (s.length >= 2) {
+                const a = s[0], b = s[s.length - 1];
+                const dt = Math.max(1, b.t - a.t);
+                vx = ((b.x - a.x) / dt) * 1000;
+                vy = ((b.y - a.y) / dt) * 1000;
+            }
+            const cur = currentPanelPos();
+            if (reduceMotion) { placePanel(cur.x, cur.y, true); return; }
+            const proj = v => (v / 1000) * 0.998 / (1 - 0.998);
+            const t = clampPanel(cur.x + proj(vx), cur.y + proj(vy));
+            springTo(t.x, t.y, vx, vy);
+        }
+        header.addEventListener('pointerup', endDrag);
+        header.addEventListener('pointercancel', endDrag);
+        window.addEventListener('resize', () => {
+            const p = currentPanelPos();
+            placePanel(p.x, p.y, true);
+        });
+
         window.addEventListener('message', (e) => {
             if (!e.data) return;
             if (e.data.type === 'SEED_STATUS') {
-                const el = document.getElementById('st-status');
+                const el = ui('st-status');
                 if (el) { el.innerText = e.data.text; if (e.data.color) el.style.color = e.data.color; }
-                if (e.data.hideMatches) { const mp = document.getElementById('st-matches'); if (mp) mp.style.display = 'none'; }
+                if (e.data.hideMatches) { const mp = ui('st-matches'); if (mp) mp.hidden = true; }
             }
             if (e.data.type === 'SEED_DEBUG') {
-                const el = document.getElementById('st-debug');
+                const el = ui('st-debug');
                 if (el) {
                     dbgLines.push(String(e.data.text).slice(0, 200));
                     if (dbgLines.length > 5) dbgLines.shift();
@@ -625,8 +987,8 @@
                 }
             }
             if (e.data.type === 'SEED_MATCHES') {
-                const mp = document.getElementById('st-matches'), mt = document.getElementById('st-matches-text');
-                if (mp && mt) { mt.innerText = e.data.text; mp.style.display = 'block'; }
+                const mp = ui('st-matches'), mt = ui('st-matches-text');
+                if (mp && mt) { mt.innerText = e.data.text; mp.hidden = false; }
             }
             if (e.data.type === 'SEED_STATE_QUERY') {
                 try { e.source.postMessage({ type: 'SEED_STATE_RESP', state }, '*'); } catch(e2) {}
@@ -650,7 +1012,7 @@
                 if (queueActive()) { queueReturn('Skipped course — ' + label + ' needs an adapter'); return; }
                 applyState('paused');
                 updateStatus(`Paused — ${label} needs an adapter. Capture a screenshot and SNIFF/DUMP.`, '#f38ba8');
-                const dbg = document.getElementById('st-debug');
+                const dbg = ui('st-debug');
                 if (dbg) dbg.innerText = `${d.kind}: ${evText}`;
             }
             if (e.data.type === 'SEED_TERMINAL_PAGE') {
@@ -660,7 +1022,7 @@
                 if (queueActive()) { queueReturn('Course exit page — moving on'); return; }
                 applyState('paused');
                 updateStatus('Paused — course exit/Bye page detected. Reload the course before retrying START.', '#f38ba8');
-                const dbg = document.getElementById('st-debug');
+                const dbg = ui('st-debug');
                 if (dbg) dbg.innerText = `terminal: ${evText}`;
             }
             if (e.data.type === 'SEED_UNKNOWN_IDLE') {
@@ -668,7 +1030,7 @@
                 if (queueActive()) { queueReturn('Skipped course — unknown-idle incident'); return; }
                 applyState('paused');
                 updateStatus('Paused — no supported action found. Download INCIDENT before using NUKE or leaving the course.', '#f38ba8');
-                const dbg = document.getElementById('st-debug');
+                const dbg = ui('st-debug');
                 const fr = (e.data.incident && e.data.incident.frame) || '';
                 if (dbg) dbg.innerText = `unknown-idle: ${String(fr).slice(0, 200)}`;
             }
@@ -770,8 +1132,12 @@
                     url: sanitizeIncidentUrl(en && en.url),
                     frame: sanitizeIncidentUrl(en && en.frame)
                 }));
+                // Always-on sanitized telemetry — populated even with SNIFF off.
+                safe.netMeta = recentNetworkMeta.slice(-60);
+                safe.aiCalls = aiCallLog.slice(-20);
+                safe.sniffActive = !!sniffOn;
                 latestIncident = safe;
-                if (incidentBtn) incidentBtn.style.display = 'inline-block';
+                if (incidentBtn) incidentBtn.hidden = false;
                 // Auto-save so unattended queue runs leave evidence — the
                 // INCIDENT button remains as a manual re-download.
                 const safeType = String(safe.type || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'unknown';
@@ -786,7 +1152,7 @@
         }
 
         function updateStatus(t, c) {
-            const el = document.getElementById('st-status');
+            const el = ui('st-status');
             if (el) { el.innerText = t; if (c) el.style.color = c; }
         }
         function broadcastState() {
@@ -845,13 +1211,14 @@
     // aren't evicted by chatter.
     const JOURNAL_SKIP = /^(Delay \d|Waiting for AI|\[SNIFF\]|video \d)/;
     function journalPush(kind, t) {
+        syncFrameRoute();
         const text = scrubIncidentText(t, 160);
         if (JOURNAL_SKIP.test(text)) return;
         const last = frameJournal[frameJournal.length - 1];
         if (last && last.text === text && last.kind === kind) return;
         const entry = { at: new Date().toISOString(), kind, text };
         pushBounded(frameJournal, entry, 150);
-        try { GM_setValue(journalKey, JSON.stringify(frameJournal)); } catch(e) {}
+        try { GM_setValue(currentJournalKey(), JSON.stringify(frameJournal)); } catch(e) {}
     }
     function sendStatus(t, c, hm) {
         journalPush('status', t);
@@ -901,6 +1268,41 @@
             });
         } catch (err) {}
     });
+    // Capture sanitized console.error / console.warn breadcrumbs per frame
+    (() => {
+        let inHook = false;
+        for (const lvl of ['error', 'warn']) {
+            try {
+                const orig = console[lvl];
+                if (typeof orig !== 'function') continue;
+                console[lvl] = function () {
+                    if (!inHook) {
+                        inHook = true;
+                        try {
+                            const raw = Array.from(arguments).slice(0, 3).map(a => {
+                                if (a instanceof Error) return a.name + ': ' + a.message;
+                                if (typeof a === 'string') return a;
+                                if (typeof a === 'number' || typeof a === 'boolean') return String(a);
+                                return '';
+                            }).filter(Boolean).join(' ');
+                            if (raw && !/ResizeObserver loop/i.test(raw)) {
+                                pushBounded(runtimeErrors, {
+                                    at: new Date().toISOString(),
+                                    kind: 'console.' + lvl,
+                                    message: scrubIncidentText(raw, 200),
+                                    source: sanitizeIncidentUrl(location.href),
+                                    line: 0,
+                                    column: 0
+                                }, 50);
+                            }
+                        } catch (_) {}
+                        inHook = false;
+                    }
+                    return orig.apply(this, arguments);
+                };
+            } catch (_) {}
+        }
+    })();
 
     function reportUnhandledAdapter(detection) {
         if (!detection || !detection.signature) return false;
@@ -1497,12 +1899,61 @@
         return incident;
     }
 
+    // Non-mutating SCORM CMI state reader for diagnostics (walks accessible frames).
+    function readScormSnapshot() {
+        try {
+            const root = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+            const seen = new Set(), stack = [root];
+            let target = null;
+            while (stack.length) {
+                const w = stack.pop();
+                if (!w || seen.has(w)) continue;
+                seen.add(w);
+                try {
+                    if (w.API_1484_11 || w.API) { target = w; break; }
+                    if (w.parent && w.parent !== w) stack.push(w.parent);
+                    for (let i = 0; i < w.frames.length; i++) stack.push(w.frames[i]);
+                } catch (_) {}
+            }
+            if (!target) return null;
+            if (target.API_1484_11 && typeof target.API_1484_11.GetValue === 'function') {
+                const g = k => { try { return clipStr(target.API_1484_11.GetValue(k), 80); } catch (_) { return ''; } };
+                return {
+                    version: '2004',
+                    completion: g('cmi.completion_status'),
+                    success: g('cmi.success_status'),
+                    progress: g('cmi.progress_measure'),
+                    scoreScaled: g('cmi.score.scaled'),
+                    scoreRaw: g('cmi.score.raw'),
+                    location: scrubIncidentText(g('cmi.location'), 100),
+                    objectivesCount: Number(g('cmi.objectives._count')) || 0,
+                    interactionsCount: Number(g('cmi.interactions._count')) || 0
+                };
+            }
+            if (target.API && typeof target.API.LMSGetValue === 'function') {
+                const g = k => { try { return clipStr(target.API.LMSGetValue(k), 80); } catch (_) { return ''; } };
+                return {
+                    version: '1.2',
+                    completion: g('cmi.core.lesson_status'),
+                    scoreRaw: g('cmi.core.score.raw'),
+                    location: scrubIncidentText(g('cmi.core.lesson_location'), 100),
+                    objectivesCount: Number(g('cmi.objectives._count')) || 0,
+                    interactionsCount: Number(g('cmi.interactions._count')) || 0
+                };
+            }
+        } catch (_) {}
+        return null;
+    }
+
     // Point-in-time state snapshot — answers the usual first questions at a
     // stall: which scroller is real, what's locked, what's still interactive,
+    // what blocks/media/embeds/raffle fields are on screen, SCORM status,
     // and whether the course model was reachable. Sanitized (no user data).
     function buildDiag() {
+        syncFrameRoute();
         const d = {
             at: new Date().toISOString(),
+            runId: String(GM_getValue('seed_runid', '') || ''),
             url: sanitizeIncidentUrl(location.href),
             title: clipStr(document.title, 80),
             engine: detectCourseEngine(),
@@ -1511,9 +1962,42 @@
             frame: clipStr(frameOriginPath(), 200)
         };
         try {
+            d.frameAgeMs = Date.now() - frameBornAt;
+            d.viewport = {
+                w: window.innerWidth || 0,
+                h: window.innerHeight || 0,
+                scrollY: Math.round(window.scrollY || 0),
+                hidden: !!document.hidden,
+                visibility: String(document.visibilityState || '')
+            };
+        } catch (e) {}
+        try {
+            const seenH = new Set();
+            d.headings = [];
+            for (const h of document.querySelectorAll('h1, h2, h3, .lesson-header__title, .nav-sidebar-header__title, [class*="course-title"]')) {
+                if (d.headings.length >= 6) break;
+                if (!isRenderedForIncident(h)) continue;
+                const txt = scrubIncidentText(h.innerText || h.textContent || '', 120);
+                if (!txt || seenH.has(txt)) continue;
+                seenH.add(txt);
+                d.headings.push(txt);
+            }
+        } catch (e) {}
+        try {
             d.scrollers = Array.from(document.querySelectorAll('.page-wrap, .page__wrapper, .lesson-main'))
                 .map(s => ({ cls: clipStr(s.className, 60), h: s.scrollHeight, ch: s.clientHeight, top: Math.round(s.scrollTop) }))
                 .filter(s => s.h > s.ch + 10).slice(0, 6);
+        } catch (e) {}
+        try {
+            d.blocks = Array.from(document.querySelectorAll('[data-block-id]')).slice(0, 25).map(b => {
+                const r = b.getBoundingClientRect();
+                return {
+                    id: clipStr(b.getAttribute('data-block-id'), 48),
+                    cls: clipStr(b.className, 100),
+                    top: Math.round(r.top),
+                    h: Math.round(r.height)
+                };
+            });
         } catch (e) {}
         try {
             d.interactives = {
@@ -1521,12 +2005,35 @@
                 checkboxUnchecked: document.querySelectorAll('.block-list [role="checkbox"][aria-checked="false"]').length,
                 accordionOpen: document.querySelectorAll('button.blocks-accordion__header[aria-expanded="true"]').length,
                 accordionClosed: document.querySelectorAll('button.blocks-accordion__header[aria-expanded="false"]').length,
-                videos: document.querySelectorAll('video').length
+                flashcardsTotal: document.querySelectorAll('.flashcard-side-flip__btn, .flashcard__turn').length,
+                processSteppers: document.querySelectorAll('button.process-counter__btn, button.process-control--next, button.carousel-controls-next').length,
+                sortingCards: document.querySelectorAll('.block-sorting-activity .playing-card').length,
+                labeledMarkers: document.querySelectorAll('.labeled-graphic-marker').length,
+                quizActiveCards: document.querySelectorAll('.quiz-card--active:not([inert])').length,
+                videos: document.querySelectorAll('video').length,
+                audios: document.querySelectorAll('audio').length
             };
         } catch (e) {}
         try {
+            const mediaEls = Array.from(document.querySelectorAll('video, audio')).slice(0, 8).map(m => ({
+                tag: String(m.tagName || '').toLowerCase(),
+                paused: !!m.paused,
+                ended: !!m.ended,
+                t: Math.round(m.currentTime || 0),
+                dur: Number.isFinite(m.duration) ? Math.round(m.duration) : null,
+                readyState: m.readyState,
+                networkState: m.networkState,
+                muted: !!m.muted,
+                src: sanitizeIncidentUrl(m.currentSrc || m.getAttribute('src') || '')
+            }));
+            const playButtons = Array.from(document.querySelectorAll(
+                '.vjs-big-play-button, button[aria-label="Play Video"], button[class*="play"], .plyr__control--overlaid, .ytp-large-play-button, [aria-label*="Play" i]'
+            )).filter(b => isRenderedForIncident(b)).slice(0, 6).map(controlEvidence);
+            if (mediaEls.length || playButtons.length) d.media = { elements: mediaEls, playButtons };
+        } catch (e) {}
+        try {
             const cb = document.querySelector('button.continue-btn');
-            d.continueBtn = cb ? { disabled: !!cb.disabled, text: clipStr(cb.innerText, 30) } : null;
+            d.continueBtn = cb ? { disabled: !!cb.disabled, ariaDisabled: cb.getAttribute('aria-disabled'), cls: clipStr(cb.className, 80), text: clipStr(cb.innerText, 30) } : null;
             d.lockHint = /complete the content above/i.test(document.body ? document.body.innerText : '');
         } catch (e) {}
         try {
@@ -1536,23 +2043,100 @@
                 fetchCourse: typeof win.__fetchCourse === 'function',
                 quizDefs: (() => { try { return quizDefs().length; } catch (_) { return -1; } })()
             };
+            const scorm = readScormSnapshot();
+            if (scorm) d.scorm = scorm;
         } catch (e) {}
         try {
-            d.sweep = { armed: sweepArmed.size, reswept: sweepReswept.size };
-            // Timing fields distinguish the two silent-stall signatures:
-            // nextActionIn>0 = the delay branch is eating every tick;
-            // huge/zero with no journal = the tick throws before any status.
+            const domSignals = {
+                blockerMessages: [],
+                lockedNavigation: [],
+                controls: [],
+                embeds: [],
+                canvases: []
+            };
+            const seenMsg = new Set();
+            for (const el of document.querySelectorAll(
+                '[role="alert"], [aria-live="assertive"], [class*="validation"], [class*="error"], [class*="required"], [class*="hint"]')) {
+                if (domSignals.blockerMessages.length >= 10) break;
+                if (!isRenderedForIncident(el)) continue;
+                const txt = scrubIncidentText(el.innerText || el.textContent || '', 180);
+                if (!txt || seenMsg.has(txt)) continue;
+                seenMsg.add(txt);
+                domSignals.blockerMessages.push(txt);
+            }
+            for (const el of document.querySelectorAll('button, a, [role="button"], [aria-disabled]')) {
+                if (domSignals.lockedNavigation.length >= 10) break;
+                if (!isRenderedForIncident(el)) continue;
+                const t = clipStr(el.getAttribute('aria-label') || el.innerText || el.textContent || '', 60);
+                if (!/\b(next|continue|submit|check|done|start|resume)\b/i.test(t)) continue;
+                const locked = el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+                    !!el.closest('.is-disabled, [disabled], .locked, [class*="locked"], [aria-disabled="true"]');
+                if (locked) domSignals.lockedNavigation.push(controlEvidence(el));
+            }
+            for (const el of document.querySelectorAll(
+                'button, a, input, select, textarea, [role="button"], [role="radio"], [role="checkbox"], [role="combobox"], [role="option"], [aria-disabled]')) {
+                if (domSignals.controls.length >= 35) break;
+                if (!isRenderedForIncident(el)) continue;
+                domSignals.controls.push(controlEvidence(el));
+            }
+            for (const f of document.querySelectorAll('iframe')) {
+                if (domSignals.embeds.length >= 10) break;
+                if (!isRenderedForIncident(f)) continue;
+                const src = sanitizeIncidentUrl(f.getAttribute('src') || '');
+                if (src) domSignals.embeds.push({ src });
+            }
+            for (const c of document.querySelectorAll('canvas')) {
+                if (domSignals.canvases.length >= 6) break;
+                if (!isRenderedForIncident(c)) continue;
+                const r = c.getBoundingClientRect();
+                domSignals.canvases.push({ width: Math.round(r.width), height: Math.round(r.height), cls: clipStr(c.className, 80) });
+            }
+            if (isRaffleFrame()) {
+                domSignals.raffleFields = Array.from(document.querySelectorAll('input, textarea, select, [role="combobox"]'))
+                    .filter(el => isRenderedForIncident(el)).slice(0, 20).map(el => ({
+                        tag: String(el.tagName || '').toLowerCase(),
+                        type: clipStr(el.getAttribute('type') || '', 24),
+                        role: clipStr(el.getAttribute('role') || '', 24),
+                        ownLabel: scrubIncidentText(raffleFieldLabel(el).own, 80),
+                        ctxHint: scrubIncidentText(raffleFieldLabel(el).ctx, 80),
+                        required: !!(el.required || el.getAttribute('aria-required') === 'true'),
+                        disabled: !!el.disabled,
+                        filled: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : !!String(el.value || el.innerText || '').trim()
+                    }));
+            }
+            d.domSignals = domSignals;
+        } catch (e) {}
+        try {
+            d.sweep = { armed: sweepArmed.size, topDone: sweepTopDone.size, reswept: sweepReswept.size };
             d.nextActionIn = Math.max(0, nextActionTime - Date.now());
             d.stuckFor = stuckSince ? Date.now() - stuckSince : 0;
+            d.engineState = {
+                activeSolveQId: scrubIncidentText(activeSolveQId || '', 80) || null,
+                attemptedCount: attempted.size,
+                quizSolveFails: Object.assign({}, quizSolveFails),
+                submitRetries: Object.assign({}, submitRetries),
+                takeAgainRetries: Object.assign({}, takeAgainRetries),
+                mediaRetries: Object.assign({}, mediaRetries),
+                sortRetries: Object.assign({}, sortRetries),
+                triedInteractives: Object.entries(interactedBlocks).slice(-15).map(([id, n]) => ({ id: scrubIncidentText(id, 100), n: Number(n) || 0 })),
+                fwdClicks: Array.from(fwdClickLog.entries()).slice(-15).map(([id, v]) => ({ id: scrubIncidentText(id, 100), n: v.n, ageMs: Date.now() - v.at })),
+                lastC1Skips: lastC1Skips.slice(-15),
+                unhandledCount: unhandledSurfaces.size,
+                raffle: {
+                    isRaffleFrame: isRaffleFrame(),
+                    src: raffleSrc || null,
+                    needProfile: !!raffleNeedProfile,
+                    submitted: !!raffleSubmitted,
+                    submitTries: raffleSubmitTries,
+                    fillCounts: Object.assign({}, raffleFillCounts)
+                }
+            };
         } catch (e) {}
-        // Surface captured runtime errors — an exception thrown inside the
-        // tick fires window.onerror but otherwise leaves no trace (the silent-
-        // stall signature of DIAG 1790014642688).
         try {
             if (runtimeErrors && runtimeErrors.length) {
-                d.errors = runtimeErrors.slice(-4).map(er => clipStr(
+                d.errors = runtimeErrors.slice(-15).map(er => clipStr(
                     (er && er.kind ? er.kind + ': ' : '') + ((er && er.message) || er) +
-                    (er && er.source ? ' @ ' + sanitizeIncidentUrl(er.source) + ':' + (er.line || '?') : ''), 200));
+                    (er && er.source ? ' @ ' + sanitizeIncidentUrl(er.source) + (er.line ? ':' + er.line : '') : ''), 220));
             }
         } catch (e) {}
         return d;
@@ -1574,18 +2158,33 @@
             }
         } catch (e) {}
         out.sort((a, b) => String(a.at).localeCompare(String(b.at)));
-        return out.slice(-400);
+        return out.slice(-600);
     }
 
-    function collectDiags() {
-        const out = {};
+    function collectDiags(refNow) {
+        const now = refNow || Date.now();
+        const live = {};
+        const staleEntries = [];
         try {
             for (const k of GM_listValues()) {
                 if (!k.startsWith('seed_diag::')) continue;
-                try { out[k.slice(11).replace(/^https?:\/\//, '')] = JSON.parse(GM_getValue(k, '{}')); } catch (e) {}
+                try {
+                    const v = JSON.parse(GM_getValue(k, '{}'));
+                    const label = k.slice(11).replace(/^https?:\/\//, '');
+                    const ts = Date.parse(v && v.at || '') || 0;
+                    const ageMs = ts ? Math.max(0, now - ts) : Infinity;
+                    if (ageMs <= 15000) {
+                        live[label] = Object.assign({ ageMs }, v);
+                    } else {
+                        staleEntries.push([label, Object.assign({ ageMs: Number.isFinite(ageMs) ? ageMs : null }, v), ts]);
+                    }
+                } catch (e) {}
             }
         } catch (e) {}
-        return out;
+        staleEntries.sort((a, b) => b[2] - a[2]);
+        const historical = {};
+        for (const [label, v] of staleEntries.slice(0, 12)) historical[label] = v;
+        return { live, historical };
     }
 
     function isTerminalNavLabel(cleanText) {
@@ -1873,13 +2472,26 @@
         const history = loadHistory();
         let html = `<html><head><title>Seed Helper Logs</title>
         <style>
-            body { font-family: sans-serif; background: #1e1e2e; color: #cdd6f4; padding: 20px; line-height: 1.5; }
-            .q-card { background: #313244; margin-bottom: 20px; padding: 15px; border-radius: 8px; border: 1px solid #45475a; }
-            .correct { color: #a6e3a1; font-weight: bold; }
-            .incorrect { color: #f38ba8; font-weight: bold; }
-            .guess { background: #45475a; padding: 8px; border-radius: 4px; margin-top: 8px; font-family: monospace; }
-            button { background: #89b4fa; color: #1e1e2e; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 14px; }
-            button:hover { opacity: 0.9; }
+            :root { color-scheme: dark; }
+            * { box-sizing: border-box; }
+            body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif; background: #16161e; color: #cdd6f4; padding: 0 20px 60px; line-height: 1.55; margin: 0 auto; max-width: 960px; }
+            #logs-body > div:first-child { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 2px; background: rgba(22,22,30,0.85); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+            #logs-body > div:first-child h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; color: #89b4fa; margin: 0; }
+            #logs-body > div:nth-of-type(2) { background: rgba(69,71,90,0.4) !important; border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 16px 18px !important; }
+            #logs-body > div:nth-of-type(2) h2 { font-size: 16px; margin-top: 0; }
+            .q-card { background: rgba(49,49,68,0.6); margin-bottom: 14px; padding: 16px 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.07); }
+            .q-card:hover { border-color: rgba(137,180,250,0.25); }
+            .q-card h3 { font-size: 14.5px; }
+            .q-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #9399b2; }
+            .correct { color: #a6e3a1; font-weight: 600; }
+            .incorrect { color: #f38ba8; font-weight: 600; }
+            .guess { background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 8px; margin-top: 8px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; border-left: 2px solid rgba(137,180,250,0.4); }
+            button { background: #89b4fa; color: #1e1e2e; border: none; padding: 8px 16px; border-radius: 9px; font-weight: 650; cursor: pointer; font-size: 13px; font-family: inherit; transition: background-color .15s ease, transform .14s cubic-bezier(0.23,1,0.32,1); }
+            button:hover { background: #a9c4fb; }
+            button:active { transform: scale(0.96); }
+            ul { margin: 4px 0; }
+            li { margin: 2px 0; }
+            hr { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 20px 0; }
         </style>
         <script>
             var historyData = ${JSON.stringify(history)};
@@ -2243,7 +2855,7 @@
         // always has near-current state even if frames die mid-broadcast.
         if (now - lastDiagWrite > 20000) {
             lastDiagWrite = now;
-            try { GM_setValue(diagKey, JSON.stringify(buildDiag())); } catch(e) {}
+            try { GM_setValue(currentDiagKey(), JSON.stringify(buildDiag())); } catch(e) {}
         }
         // Raffle/giveaway embeds (paperform.co) run their own filler — the
         // course engine has no business inside the form frame.
@@ -4388,9 +5000,14 @@
         sendStatus(statusMsg, '#f38ba8');
     }
 
+    function emitAiTelemetry(item) {
+        try { window.top.postMessage({ type: 'SEED_AI_TELEMETRY', item }, '*'); } catch (_) {}
+    }
+
     function callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry = 0) {
         const apiKey = getOpenRouterApiKey();
         if (!apiKey) {
+            emitAiTelemetry({ at: new Date().toISOString(), frame: frameOriginPath(), model: null, retry, status: 0, ms: 0, outcome: 'missing-key', detail: 'No OpenRouter key configured' });
             if (activeSolveQId) { attempted.delete(activeSolveQId); activeSolveQId = null; }
             isSolving = false;
             sendStatus('Set an OpenRouter key with KEY, then press RESUME.', '#f38ba8');
@@ -4399,6 +5016,7 @@
         }
         const model = MODELS[modelIdx] || MODELS[0];
         const modelTag = model.id.split('/').pop().replace(':free', '');
+        const startedAt = Date.now();
         sendStatus(retry > 0 ? `Retrying AI (${retry}/3)...` : `Asking AI (${modelTag})...`, '#89b4fa');
 
         GM_xmlhttpRequest({
@@ -4418,16 +5036,19 @@
             }),
             timeout: 30000,
             onload(res) {
+                const elapsed = Date.now() - startedAt;
                 const r = parseResponse(res.responseText);
                 if (r.error || !r.text) {
                     const err = String(r.error || 'empty').toLowerCase();
-                    sendDebug('AI error: ' + err);
-                    const retryable = err.includes('overloaded') || err.includes('503') || err.includes('too many') || err.includes('rate') || err.includes('empty');
+                    emitAiTelemetry({ at: new Date().toISOString(), frame: frameOriginPath(), model: model.id, retry, status: res.status || 0, ms: elapsed, outcome: 'api-error', detail: scrubIncidentText(err, 140) });
+                    sendDebug('AI error (HTTP ' + (res.status || 0) + '): ' + err);
+                    const retryable = err.includes('overloaded') || err.includes('503') || err.includes('too many') || err.includes('rate') || err.includes('empty') || res.status === 429 || res.status === 503;
                     if (retry < 3 && retryable) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000 * (retry + 1)); return; }
                     if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
                     releaseFailedQuestion('AI unavailable. Please refresh.');
                     return;
                 }
+                emitAiTelemetry({ at: new Date().toISOString(), frame: frameOriginPath(), model: model.id, retry, status: res.status || 200, ms: elapsed, outcome: 'ok', detail: 'chars:' + r.text.length });
                 try {
                     const p = onSuccess(r.text);
                     if (p && typeof p.catch === 'function') p.catch(err => { sendDebug('Solver error: ' + err); releaseFailedQuestion('Solver error.'); });
@@ -4437,11 +5058,15 @@
                 }
             },
             onerror()  {
+                emitAiTelemetry({ at: new Date().toISOString(), frame: frameOriginPath(), model: model.id, retry, status: 0, ms: Date.now() - startedAt, outcome: 'network-error', detail: 'GM_xmlhttpRequest onerror' });
+                sendDebug('AI network error on ' + modelTag + ' (retry ' + retry + ')');
                 if (retry < 3) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); return; }
                 if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
                 releaseFailedQuestion('Network error.');
             },
             ontimeout() {
+                emitAiTelemetry({ at: new Date().toISOString(), frame: frameOriginPath(), model: model.id, retry, status: 0, ms: Date.now() - startedAt, outcome: 'timeout', detail: '30s timeout' });
+                sendDebug('AI timeout on ' + modelTag + ' (retry ' + retry + ')');
                 if (retry < 3) { setTimeout(() => callOpenRouter(sysMsg, userMsg, modelIdx, onSuccess, retry + 1), 3000); return; }
                 if (modelIdx + 1 < MODELS.length) { callOpenRouter(sysMsg, userMsg, modelIdx + 1, onSuccess, 0); return; }
                 releaseFailedQuestion('AI timed out.');
@@ -4567,14 +5192,22 @@
             });
         }
         if (e.data.type === 'SEED_DIAG_REQ') {
-            try { GM_setValue(diagKey, JSON.stringify(buildDiag())); } catch(_) {}
+            try { GM_setValue(currentDiagKey(), JSON.stringify(buildDiag())); } catch(_) {}
             // Relay deeper so nested frames also snapshot
             document.querySelectorAll('iframe').forEach(f => {
                 try { f.contentWindow.postMessage({ type: 'SEED_DIAG_REQ' }, '*'); } catch(_) {}
             });
         }
-        if (e.data.type === 'SEED_SNIFF_ENTRY' && (sniffOn || (e.data.entry && /api\.seedtalent\.com\/api\/v1\/courses\//.test(String(e.data.entry.url || ''))))) {
-            try { window.top.postMessage({ type: 'SEED_SNIFF_AGG', entry: e.data.entry }, '*'); } catch(_) {}
+        if (e.data.type === 'SEED_SNIFF_ENTRY' && e.data.entry) {
+            const raw = e.data.entry;
+            const isCatalogFeed = /api\.seedtalent\.com\/api\/v1\/courses\//.test(String(raw.url || ''));
+            // Always forward lightweight metadata so DIAG/INCIDENT has a recent
+            // network + SCORM ring buffer even when SNIFF was off; include full
+            // bodies only when SNIFF is enabled (or for catalog feed parsing).
+            const forwarded = (sniffOn || isCatalogFeed)
+                ? raw
+                : { frame: raw.frame, method: raw.method, url: raw.url, status: raw.status };
+            try { window.top.postMessage({ type: 'SEED_SNIFF_AGG', entry: forwarded, full: !!sniffOn }, '*'); } catch(_) {}
         }
     });
 
@@ -4582,20 +5215,45 @@
     if (window === window.top) {
         const STATIC_RE = /\.(css|js|png|jpe?g|gif|svg|woff2?|ttf|mp4|webm|mp3|ico)(\?|#|$)/i;
         window.addEventListener('message', (e) => {
-            if (!e.data || e.data.type !== 'SEED_SNIFF_AGG') return;
+            if (!e.data) return;
+            if (e.data.type === 'SEED_AI_TELEMETRY' && e.data.item) {
+                const it = e.data.item;
+                pushBounded(aiCallLog, {
+                    at: String(it.at || new Date().toISOString()).slice(0, 40),
+                    frame: sanitizeIncidentUrl(it.frame),
+                    model: clipStr(it.model || '', 60) || null,
+                    retry: Number(it.retry) || 0,
+                    status: Number(it.status) || 0,
+                    ms: Number(it.ms) || 0,
+                    outcome: clipStr(it.outcome || '', 30),
+                    detail: scrubIncidentText(it.detail || '', 140)
+                }, 40);
+                return;
+            }
+            if (e.data.type !== 'SEED_SNIFF_AGG') return;
             const en = e.data.entry;
             if (!en || STATIC_RE.test(en.url)) return;
+            pushBounded(recentNetworkMeta, {
+                at: new Date().toISOString(),
+                frame: sanitizeIncidentUrl(en.frame),
+                method: String(en.method || '').slice(0, 16),
+                status: Number(en.status) || 0,
+                url: sanitizeIncidentUrl(en.url)
+            }, 150);
             // Catalog feed for queue mode: cache the courses/* body keyed by
             // endpoint tail, kept out of the sniff log when the sniffer is off.
             const cm = String(en.url).match(/api\.seedtalent\.com\/api\/v1\/courses\/([^?]+)/);
-            if (cm) {
+            if (cm && en.respBody) {
                 try { courseApiCache[cm[1]] = en.respBody; } catch(e2) {}
                 if (!sniffOn) return;
                 // Keep catalog bulk out of the sniff dump — presence + head is enough.
-                if (en.respBody && en.respBody.length > 2000) en.respBody = en.respBody.slice(0, 2000) + '…[truncated]';
+                if (en.respBody.length > 2000) en.respBody = en.respBody.slice(0, 2000) + '…[truncated]';
+            } else if (!sniffOn) {
+                return;
             }
             sniffEntries.push(en);
             if (sniffEntries.length > 2000) sniffEntries.shift();
+            if (onSniffCount) { try { onSniffCount(sniffEntries.length); } catch (_) {} }
             sendDebug('[SNIFF] ' + en.method + ' ' + en.status + ' ' + String(en.url).slice(0, 110));
         });
     }
