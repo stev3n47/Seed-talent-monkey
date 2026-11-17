@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.70
+// @version       9.71
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.70';
+    const HELPER_VERSION = '9.71';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -551,7 +551,27 @@
             broadcastState();
         }
 
-        startBtn.addEventListener('click',  () => { try { GM_setValue('seed_runid', String(Date.now())); } catch(e) {} applyState('running'); updateStatus('Running...', '#a6e3a1'); });
+        // START on a Seed Talent catalog surface has no course content to run —
+        // arm the catalog autopilot so it opens outstanding courses in turn.
+        // Inside /course/* START stays a plain engine resume for that course.
+        function isCatalogSurface() {
+            return /seedtalent\.com$/.test(location.hostname) &&
+                (location.pathname === '/' || /^\/courses/.test(location.pathname));
+        }
+        startBtn.addEventListener('click',  () => {
+            try { GM_setValue('seed_runid', String(Date.now())); } catch(e) {}
+            if (isCatalogSurface()) {
+                if (queueActive()) {
+                    applyState('running');
+                    updateStatus('Queue running — opening outstanding courses.', '#b4befe');
+                } else {
+                    armQueue();
+                }
+                return;
+            }
+            applyState('running');
+            updateStatus('Running...', '#a6e3a1');
+        });
         pauseBtn.addEventListener('click',  () => applyState('paused'));
         resumeBtn.addEventListener('click', () => { applyState('running'); updateStatus('Resumed.', '#a6e3a1'); });
         stopBtn.addEventListener('click',   () => { setQueue({ active: false }); applyState('stopped'); broadcastReset(); });
@@ -561,6 +581,17 @@
         // persists in GM storage so navigation auto-resumes the engine.
         const queueBtn = ui('st-queue');
         function refreshQueueBtn() { try { queueBtn.classList.toggle('is-on', queueActive()); } catch(e) {} }
+        // Shared by QUEUE and by START on the catalog: arm the autopilot,
+        // resume the engine, and make sure we're on the courses listing.
+        function armQueue() {
+            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false });
+            applyState('running');
+            updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
+            refreshQueueBtn();
+            if (!/seedtalent\.com$/.test(location.hostname) || !/^\/courses/.test(location.pathname)) {
+                try { location.assign('https://app.seedtalent.com/courses'); } catch(e) { location.href = 'https://app.seedtalent.com/courses'; }
+            }
+        }
         queueBtn.addEventListener('click', () => {
             if (queueActive()) {
                 setQueue({ active: false });
@@ -569,13 +600,7 @@
                 refreshQueueBtn();
                 return;
             }
-            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false });
-            applyState('running');
-            updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
-            refreshQueueBtn();
-            if (!/seedtalent\.com$/.test(location.hostname) || !/^\/courses/.test(location.pathname)) {
-                try { location.assign('https://app.seedtalent.com/courses'); } catch(e) { location.href = 'https://app.seedtalent.com/courses'; }
-            }
+            armQueue();
         });
         setInterval(refreshQueueBtn, 4000);
         refreshQueueBtn();
@@ -4816,7 +4841,7 @@
         _quizDefs = [];
         const walk = o => {
             if (!o || typeof o !== 'object') return;
-            if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length))) {
+            if (Array.isArray(o.answers) && o.answers.length && (o.correct || (Array.isArray(o.corrects) && o.corrects.length) || o.answers.some(a => a && a.correct === true))) {
                 _quizDefs.push(o);
             } else {
                 const titleish = o.title || o.prompt || o.question || o.stem;
@@ -4863,6 +4888,27 @@
                     if (typeof win.__fetchCourse === 'function') {
                         win.__fetchCourse().then(cd => { _quizDefs = []; walk(cd); }).catch(() => {});
                     }
+                    // Newest remoteManifest builds (C12212+) ship the model as
+                    // runtime-data.js JSONP behind window.Runtime.fetch() — the
+                    // same walk finds defs in that shape too.
+                    if (win.Runtime && typeof win.Runtime.fetch === 'function') {
+                        Promise.resolve(win.Runtime.fetch()).then(cd => { _quizDefs = []; walk(cd); }).catch(() => {});
+                    }
+                    // Runtime.fetch gates on an LMS-parent check that can
+                    // reject inside nested driver frames — the JSONP file
+                    // itself is same-origin and public, so grab it directly.
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: new URL('runtime-data.js', location.href).href,
+                        onload: res => {
+                            try {
+                                const m = String(res.responseText || '').match(/__jsonp\("runtime-data\.js","([^"]+)"\)/);
+                                if (!m) return;
+                                const cd = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(m[1]), c => c.charCodeAt(0))));
+                                _quizDefs = []; walk(cd);
+                            } catch(e) {}
+                        }
+                    });
                 } catch(e) {}
             }
         } catch(e) {}
@@ -4880,6 +4926,19 @@
         for (const q of quizDefs()) {
             const t = scormNormQuestion(htmlText(q.title));
             if (!t || !(t === target || t.includes(target) || target.includes(t))) continue;
+            // New runtime-data shape: each answer carries correct:true/false
+            // instead of the question holding correct/corrects id refs.
+            if (Array.isArray(q.answers) && q.answers.some(a => a && a.correct === true)) {
+                const nums = [];
+                for (const ans of q.answers) {
+                    if (!ans || ans.correct !== true) continue;
+                    const idx = plainOpts.findIndex(o => scormNorm(o) === scormNorm(htmlText(ans.title)));
+                    if (idx === -1) { nums.length = 0; break; }
+                    nums.push(idx + 1);
+                }
+                if (nums.length) return nums;
+                continue;
+            }
             const ids = (q.type === 'MULTIPLE_RESPONSE' && Array.isArray(q.corrects) && q.corrects.length)
                 ? q.corrects : [q.correct];
             const nums = [];
