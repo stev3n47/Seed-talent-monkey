@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.73
+// @version       9.74
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.73';
+    const HELPER_VERSION = '9.74';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -216,6 +216,7 @@
     function isCourseActionLabel(lbl) {
         return /^(start|resume)\s+course\b/i.test(lbl) || /^\d{1,3}%\s*continue\b/i.test(lbl);
     }
+    function btnHash(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return h.toString(36); }
 
     // Inactive catalog tabs/sections hide their cards. Find the control that
     // owns the hidden panel (tab via aria-controls, <details> summary, or an
@@ -323,12 +324,21 @@
                 const im = String((card && card.innerHTML) || '').match(/\/course\/([0-9a-f-]{36})/i);
                 if (im) id = im[1];
             }
+            if (!id && entries.length) {
+                // React-router cards carry no href — match the card text to a
+                // cached API course name to recover the real UUID.
+                const cardText = String((card && card.innerText) || '');
+                const hits = entries.filter(function(c) {
+                    return c.name && c.name.length > 8 && cardText.indexOf(c.name.slice(0, 30)) !== -1;
+                }).sort(function(a, b) { return b.name.length - a.name.length; });
+                if (hits.length) id = hits[0].id;
+            }
             if (id && tried[id]) {
                 if (scan.rejected.length < 8) scan.rejected.push(lbl.slice(0, 28) + ' [tried]');
                 continue;
             }
             // No UUID recoverable — synthetic id keeps tried-tracking stable.
-            const sid = id || ('btn-' + Math.round((window.scrollY + b.getBoundingClientRect().top) / 60));
+            const sid = id || ('btn-' + btnHash(String(((card && card.innerText) || '') + '|' + lbl).slice(0, 140)));
             const label = ((card && card.innerText) || lbl).trim().slice(0, 40);
             return { id: sid, href: id ? '/course/' + id : null, label: label || lbl, anchor: b };
         }
@@ -354,8 +364,10 @@
     function queueReturn(reason) {
         const q = queueState();
         const tried = q.tried || {};
-        const cur = q.current || (location.pathname.match(/\/course\/([0-9a-f-]{36})/i) || [])[1];
+        const urlId = (location.pathname.match(/\/course\/([0-9a-f-]{36})/i) || [])[1];
+        const cur = q.current || urlId;
         if (cur) tried[cur] = true;
+        if (urlId) tried[urlId] = true;
         queueDetailSince = 0;
         setQueue({ tried, current: null });
         sendStatus((reason || 'Back to catalog') + ' — queue continues.', '#a6e3a1');
@@ -1646,7 +1658,7 @@
     const raffleFailHosts = new Set();
     let raffleNeedProfile = false;
     let raffleSrc = '', raffleDeadline = 0;
-    let raffleSubmitted = false, raffleFailSent = false;
+    let raffleSubmitted = false, raffleFailSent = false, raffleDoneNotified = false;
     let raffleProfNagAt = 0, raffleSubmitAt = 0, raffleSubmitTries = 0;
     const raffleFillCounts = {};
 
@@ -1839,20 +1851,23 @@
         const host = hostOf(unhandled.evidence && unhandled.evidence.src);
         if (!host || !RAFFLE_HOST_RE.test(host)) return false;
         if (raffleDoneHosts.has(host)) {
-            // One-shot: submitted = real progress, but returning true forever
-            // starved the idle watchdog exactly like the frozen-sweep bug —
-            // the giveaway page never advanced and the queue wedged
-            // (55min of "Raffle entry submitted — continuing…", C10539).
-            // Mark the signature handled, then fall through: normal engine
-            // flow resumes and unknown-idle fires if the page can't move on.
-            raffleDoneHosts.delete(host);
-            unhandledSurfaces.add(unhandled.signature);
-            stuckSince = 0;
-            sendStatus('Raffle entry submitted — continuing…', '#a6e3a1', true);
-            return false;
+            // Submitted = real progress. Return 'done' every tick (not true,
+            // so the idle watchdog still runs) — the tick suppresses the
+            // unhandled report and lets normal engine flow advance the page.
+            // Previously this was one-shot: the host was deleted, the next
+            // detect fell back into the grace path, the deadline expired,
+            // and the embed was reported unhandled → queue skipped the course
+            // → repicked it → infinite giveaway loop (C12177, ~47min).
+            if (!raffleDoneNotified) {
+                raffleDoneNotified = true;
+                unhandledSurfaces.add(unhandled.signature);
+                stuckSince = 0;
+                sendStatus('Raffle entry submitted — continuing…', '#a6e3a1', true);
+            }
+            return 'done';
         }
         if (raffleFailHosts.has(host)) return false;
-        if (raffleSrc !== host) { raffleSrc = host; raffleDeadline = now + 90000; }
+        if (raffleSrc !== host) { raffleSrc = host; raffleDeadline = now + 90000; raffleDoneNotified = false; }
         if (now >= raffleDeadline) { raffleSrc = ''; raffleDeadline = 0; return false; }
         sendStatus(raffleNeedProfile
             ? 'Raffle entry form — set details via 👤 INFO in the panel…'
@@ -3974,8 +3989,11 @@
             // handlers and page transitions get first chance.
             if (now - stuckSince >= 5000) {
                 const unhandled = detectUnhandledAdapter();
-                if (unhandled && unhandled.kind === 'external-embed' && handleRaffleEmbed(unhandled, now)) return;
-                if (unhandled && reportUnhandledAdapter(unhandled)) return;
+                if (unhandled && unhandled.kind === 'external-embed') {
+                    const rh = handleRaffleEmbed(unhandled, now);
+                    if (rh === true) return;
+                    if (rh !== 'done' && reportUnhandledAdapter(unhandled)) return;
+                } else if (unhandled && reportUnhandledAdapter(unhandled)) return;
             }
             // Recognized adapters win first; any other real stall pauses by 15s.
             // Fresh frames get 30s before an unknown-idle incident — Rise takes
