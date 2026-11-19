@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.72
+// @version       9.73
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.72';
+    const HELPER_VERSION = '9.73';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -183,37 +183,93 @@
     const courseApiCache = {};
     const COURSE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     function courseEntriesFromCache() {
-        const src = courseApiCache['by-category'];
-        if (!src) return [];
-        let json;
-        try { json = JSON.parse(src); } catch(e) { return []; }
         const out = [], seen = new Set();
-        (function walk(n) {
-            if (!n || typeof n !== 'object') return;
-            if (Array.isArray(n)) return n.forEach(walk);
-            // Course objects carry a uuid id AND progress/status fields;
-            // nested entities (incentives, categories) don't.
-            if (typeof n.id === 'string' && COURSE_UUID.test(n.id) &&
-                ('progress' in n || 'status' in n || 'canStartCourse' in n) && !seen.has(n.id)) {
-                seen.add(n.id);
-                out.push({ id: n.id, name: String(n.name || '').slice(0, 60),
-                           progress: n.progress, status: String(n.status || ''),
-                           canStart: n.canStartCourse !== false });
-            }
-            Object.values(n).forEach(walk);
-        })(json);
+        for (const key of Object.keys(courseApiCache)) {
+            let json;
+            try { json = JSON.parse(courseApiCache[key]); } catch(e) { continue; }
+            (function walk(n) {
+                if (!n || typeof n !== 'object') return;
+                if (Array.isArray(n)) return n.forEach(walk);
+                // Course objects carry a uuid id AND progress/status fields;
+                // nested entities (incentives, categories) don't.
+                if (typeof n.id === 'string' && COURSE_UUID.test(n.id) &&
+                    ('progress' in n || 'status' in n || 'canStartCourse' in n) && !seen.has(n.id)) {
+                    seen.add(n.id);
+                    out.push({ id: n.id, name: String(n.name || '').slice(0, 60),
+                               progress: n.progress, status: String(n.status || ''),
+                               canStart: n.canStartCourse !== false });
+                }
+                Object.values(n).forEach(walk);
+            })(json);
+        }
         return out;
     }
 
     // Scan telemetry for DIAG/journal — why the picker found nothing.
-    const lastCatalogScan = { apiTotal: 0, triedSkip: 0, doneSkip: 0, lockedSkip: 0, domAnchors: 0, domButtons: 0 };
+    const lastCatalogScan = { apiTotal: 0, triedSkip: 0, doneSkip: 0, lockedSkip: 0,
+        domAnchors: 0, domActions: 0, domVisible: 0, hiddenActions: 0,
+        revealed: 0, tabsSeen: 0, apiSamples: [], rejected: [] };
+
+    function catalogButtonLabel(b) {
+        return String(b.innerText || b.textContent || '').trim();
+    }
+    function isCourseActionLabel(lbl) {
+        return /^(start|resume)\s+course\b/i.test(lbl) || /^\d{1,3}%\s*continue\b/i.test(lbl);
+    }
+
+    // Inactive catalog tabs/sections hide their cards. Find the control that
+    // owns the hidden panel (tab via aria-controls, <details> summary, or an
+    // accordion-style aria-expanded button) and click it once.
+    function revealCourseContainer(b) {
+        const panel = b.closest('[role="tabpanel"], [class*="TabPanel"], [class*="Collapse"], details, [hidden], [aria-hidden="true"]');
+        if (!panel || panel === document.body || panel === document.documentElement) return false;
+        let ctl = null;
+        if (panel.id) {
+            ctl = document.querySelector('[aria-controls="' + panel.id + '"]');
+        }
+        if (!ctl && panel.tagName === 'DETAILS') {
+            ctl = panel.querySelector('summary');
+        }
+        if (!ctl) {
+            let n = panel.previousElementSibling;
+            while (n && !ctl) {
+                const cand = (n.matches && n.matches('button, [role="button"], summary')) ? n
+                    : (n.querySelector ? n.querySelector('button, [role="button"], summary') : null);
+                if (cand && cand.getAttribute && cand.getAttribute('aria-expanded') !== null) ctl = cand;
+                n = n.previousElementSibling;
+            }
+        }
+        if (!ctl) return false;
+        try { simulateHumanClick(ctl); return true; } catch(e) { return false; }
+    }
+
+    // Next untried category tab — incomplete courses may live on tabs the
+    // by-category feed hasn't returned yet.
+    function nextCatalogTab(q) {
+        const triedTabs = (q && q.tabsTried) || [];
+        const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+        lastCatalogScan.tabsSeen = tabs.length;
+        for (const t of tabs) {
+            if (!isVisible(t)) continue;
+            const lbl = catalogButtonLabel(t);
+            if (!lbl || triedTabs.indexOf(lbl) !== -1) continue;
+            return { el: t, label: lbl.slice(0, 40) };
+        }
+        return null;
+    }
 
     function pickNextCourse(q) {
         const tried = (q && q.tried) || {};
         const scan = lastCatalogScan;
-        scan.apiTotal = scan.triedSkip = scan.doneSkip = scan.lockedSkip = scan.domAnchors = scan.domButtons = 0;
+        scan.apiTotal = scan.triedSkip = scan.doneSkip = scan.lockedSkip =
+            scan.domAnchors = scan.domActions = scan.domVisible = scan.hiddenActions =
+            scan.revealed = scan.tabsSeen = 0;
+        scan.apiSamples = []; scan.rejected = [];
         const entries = courseEntriesFromCache();
         scan.apiTotal = entries.length;
+        scan.apiSamples = entries.slice(0, 4).map(function(c) {
+            return { n: String(c.name || '').slice(0, 36), p: c.progress, s: c.status, cs: c.canStart };
+        });
         // Pass 1 strict (canStartCourse required), pass 2 relaxed — in-progress
         // courses can report canStartCourse:false yet still resume via /course/id.
         for (const relaxed of [false, true]) {
@@ -235,13 +291,28 @@
             const label = (card.innerText || '').trim().slice(0, 40);
             return { id: m[1], href: a.href, label: label || m[1].slice(0, 8), anchor: a };
         }
-        // …then Start/Resume Course buttons — the catalog renders these as MUI
-        // buttons (no /course/ anchor), so anchor-only scans missed them.
+        // …then Start/Resume/Continue buttons — the catalog renders these as
+        // MUI buttons (no /course/ anchor), so anchor-only scans missed them.
         for (const b of document.querySelectorAll('button, [role="button"]')) {
-            const lbl = (b.innerText || b.textContent || '').trim();
-            if (!/^(start|resume)\s+course\b/i.test(lbl)) continue;
-            scan.domButtons++;
-            if (!isVisible(b)) continue;
+            const lbl = catalogButtonLabel(b);
+            if (!isCourseActionLabel(lbl)) continue;
+            scan.domActions++;
+            if (!isVisible(b)) {
+                scan.hiddenActions++;
+                // Overflow-clipped cards become visible after scrollIntoView.
+                try { b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+                if (!isVisible(b)) {
+                    // Inactive tab/accordion panel — reveal it once, rescan next tick.
+                    if (((q && q.reveals) || 0) < 15 && revealCourseContainer(b)) {
+                        setQueue({ reveals: ((q && q.reveals) || 0) + 1 });
+                        scan.revealed++;
+                        return { reveal: true };
+                    }
+                    if (scan.rejected.length < 8) scan.rejected.push(lbl.slice(0, 28) + ' [hidden]');
+                    continue;
+                }
+            }
+            scan.domVisible++;
             const card = b.closest('[class*="card"], [class*="Card"], li, article') || b.parentElement || b;
             let id = null;
             const scope = card.querySelector ? card : b.parentElement;
@@ -252,7 +323,10 @@
                 const im = String((card && card.innerHTML) || '').match(/\/course\/([0-9a-f-]{36})/i);
                 if (im) id = im[1];
             }
-            if (id && tried[id]) continue;
+            if (id && tried[id]) {
+                if (scan.rejected.length < 8) scan.rejected.push(lbl.slice(0, 28) + ' [tried]');
+                continue;
+            }
             // No UUID recoverable — synthetic id keeps tried-tracking stable.
             const sid = id || ('btn-' + Math.round((window.scrollY + b.getBoundingClientRect().top) / 60));
             const label = ((card && card.innerText) || lbl).trim().slice(0, 40);
@@ -621,7 +695,7 @@
         // Shared by QUEUE and by START on the catalog: arm the autopilot,
         // resume the engine, and make sure we're on the courses listing.
         function armQueue() {
-            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false });
+            setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false, tabsTried: [], reveals: 0 });
             applyState('running');
             updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
             refreshQueueBtn();
@@ -2201,6 +2275,13 @@
                     (er && er.source ? ' @ ' + sanitizeIncidentUrl(er.source) + (er.line ? ':' + er.line : '') : ''), 220));
             }
         } catch (e) {}
+        try {
+            d.catalog = {
+                cacheKeys: Object.keys(courseApiCache),
+                entries: courseEntriesFromCache().slice(0, 60),
+                scan: JSON.parse(JSON.stringify(lastCatalogScan))
+            };
+        } catch (e) {}
         return d;
     }
 
@@ -2950,6 +3031,11 @@
         if (window === window.top && queueActive() && /seedtalent\.com$/.test(location.hostname) && /^\/courses/.test(location.pathname)) {
             const q = queueState();
             const next = pickNextCourse(q);
+            if (next && next.reveal) {
+                // A hidden course panel was just opened — rescan next tick.
+                nextActionTime = now + 2000;
+                return;
+            }
             if (next) {
                 setQueue({ current: next.id });
                 sendStatus('Queue: opening ' + next.label + '…', '#a6e3a1');
@@ -2960,7 +3046,7 @@
                 }, 400);
                 return;
             }
-            const apiReady = 'by-category' in courseApiCache;
+            const apiReady = Object.keys(courseApiCache).some(function(k) { return k.indexOf('by-category') === 0; });
             if (!apiReady && !q.reloaded) {
                 // The app's catalog fetch may have raced the sniffer or this
                 // page was reached by SPA nav — reload once to capture it.
@@ -2979,11 +3065,23 @@
                 nextActionTime = now + 2500;
                 return;
             }
+            // Category tabs may hold incomplete courses the feed hasn't
+            // returned — cycle through untried tabs before giving up.
+            const ctab = nextCatalogTab(q);
+            if (ctab) {
+                setQueue({ tabsTried: (q.tabsTried || []).concat([ctab.label]), pages: 0 });
+                sendStatus('Queue: checking tab "' + ctab.label + '"…', '#f9e2af');
+                try { simulateHumanClick(ctab.el); } catch(e) {}
+                nextActionTime = now + 3000;
+                return;
+            }
             setQueue({ active: false });
             state = 'paused';
             const skipped = Math.max(0, Object.keys(q.tried || {}).length - (q.done || 0));
             const sc = lastCatalogScan;
-            sendDebug('Queue scan exhausted: api=' + sc.apiTotal + ' tried=' + sc.triedSkip + ' done=' + sc.doneSkip + ' locked=' + sc.lockedSkip + ' anchors=' + sc.domAnchors + ' buttons=' + sc.domButtons + ' pages=' + (q.pages || 0));
+            sendDebug('Queue scan exhausted: api=' + sc.apiTotal + ' tried=' + sc.triedSkip + ' done=' + sc.doneSkip + ' locked=' + sc.lockedSkip + ' anchors=' + sc.domAnchors + ' actions=' + sc.domActions + ' visible=' + sc.domVisible + ' hidden=' + sc.hiddenActions + ' tabs=' + (sc.tabsSeen || 0) + ' pages=' + (q.pages || 0) + ' reveals=' + (q.reveals || 0));
+            if (sc.apiSamples && sc.apiSamples.length) sendDebug('catalog api: ' + JSON.stringify(sc.apiSamples).slice(0, 320));
+            if (sc.rejected && sc.rejected.length) sendDebug('catalog rejected: ' + sc.rejected.join(' | ').slice(0, 320));
             sendStatus('Queue complete — ' + (q.done || 0) + ' done' + (skipped ? ', ' + skipped + ' skipped (see captures)' : '') + '.', '#a6e3a1');
             return;
         }
@@ -5340,9 +5438,9 @@
             }, 150);
             // Catalog feed for queue mode: cache the courses/* body keyed by
             // endpoint tail, kept out of the sniff log when the sniffer is off.
-            const cm = String(en.url).match(/api\.seedtalent\.com\/api\/v1\/courses\/([^?]+)/);
+            const cm = String(en.url).match(/api\.seedtalent\.com\/api\/v1\/courses\/([^?\s]+)(\?[^\s]*)?/);
             if (cm && en.respBody) {
-                try { courseApiCache[cm[1]] = en.respBody; } catch(e2) {}
+                try { courseApiCache[cm[1] + (cm[2] || '')] = en.respBody; } catch(e2) {}
                 if (!sniffOn) return;
                 // Keep catalog bulk out of the sniff dump — presence + head is enough.
                 if (en.respBody.length > 2000) en.respBody = en.respBody.slice(0, 2000) + '…[truncated]';
