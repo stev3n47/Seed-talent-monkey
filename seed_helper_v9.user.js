@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.76
+// @version       9.77
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.76';
+    const HELPER_VERSION = '9.77';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -181,7 +181,7 @@
     //                  canStartCourse,userTestResults:[{progress,status}]}]}]
     //   outstanding → {"items":[]} — NOT the incomplete list, ignore it.
     const courseApiCache = {};
-    const catalogPaging = { offset: 0, pending: false, exhausted: false, error: '', pages: 0, seen: [], requestedAt: 0 };
+    const catalogPaging = { offset: 0, pending: false, exhausted: false, error: '', pages: 0, seen: [], requestedAt: 0, templateWaitSince: 0 };
     function courseIsComplete(c) {
         const status = String(c.status || '').trim();
         return status ? /^(completed|passed)$/i.test(status) : Number(c.progress) >= 100;
@@ -196,7 +196,18 @@
     function acceptCatalogPage(data) {
         if (!catalogPaging.pending || data.offset !== catalogPaging.offset) return;
         catalogPaging.pending = false;
-        if (data.error) { catalogPaging.error = data.error; return; }
+        if (data.error) {
+            // The app may not have issued a by-category request yet on a fresh
+            // page load — 'template unavailable' is transient, retry for a
+            // while before declaring the scan incomplete.
+            if (/template unavailable/.test(data.error)) {
+                if (!catalogPaging.templateWaitSince) catalogPaging.templateWaitSince = Date.now();
+                if (Date.now() - catalogPaging.templateWaitSince < 45000) return;
+            }
+            catalogPaging.error = data.error;
+            return;
+        }
+        catalogPaging.templateWaitSince = 0;
         try {
             const ids = catalogPageIds(data.body);
             catalogPaging.pages++;
@@ -680,7 +691,7 @@
         document.body.appendChild(host);
 
         let courseTextAccumulator = new Set();
-        let latestIncident = null;
+        let latestIncident = null, incidentAutoDlCount = 0, lastIncidentAutoDl = 0;
         const dbgLines = [];
 
         const dot        = ui('st-dot');
@@ -751,7 +762,7 @@
         // Shared by QUEUE and by START on the catalog: arm the autopilot,
         // resume the engine, and make sure we're on the courses listing.
         function armQueue() {
-            Object.assign(catalogPaging, { offset: 0, pending: false, exhausted: false, error: '', pages: 0, seen: [], requestedAt: 0 });
+            Object.assign(catalogPaging, { offset: 0, pending: false, exhausted: false, error: '', pages: 0, seen: [], requestedAt: 0, templateWaitSince: 0 });
             setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false, tabsTried: [], reveals: 0 });
             applyState('running');
             updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
@@ -1332,9 +1343,19 @@
                 latestIncident = safe;
                 if (incidentBtn) incidentBtn.hidden = false;
                 // Auto-save so unattended queue runs leave evidence — the
-                // INCIDENT button remains as a manual re-download.
+                // INCIDENT button remains as a manual re-download. Capped:
+                // queue runs can fire an incident per course, and enough
+                // automatic downloads get Chrome to block ALL downloads from
+                // the page — including manual DIAG/DUMP (observed v9.76).
                 const safeType = String(safe.type || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'unknown';
-                downloadJson('seed_incident_' + safeType + '_' + Date.now() + '.json', safe);
+                const nowDl = Date.now();
+                if (incidentAutoDlCount < 6 && nowDl - lastIncidentAutoDl > 20000) {
+                    incidentAutoDlCount++;
+                    lastIncidentAutoDl = nowDl;
+                    downloadJson('seed_incident_' + safeType + '_' + Date.now() + '.json', safe);
+                } else if (incidentAutoDlCount >= 6) {
+                    sendDebug('Incident auto-download capped at 6 — evidence stays in journal + DIAG.');
+                }
                 // Pipeline: hand the incident to the local capture listener
                 // (capture_server.js, port 8766) — silent no-op when it isn't running.
                 try {
@@ -2338,7 +2359,7 @@
         try {
             d.catalog = {
                 paging: { offset: catalogPaging.offset, pending: catalogPaging.pending, exhausted: catalogPaging.exhausted, error: catalogPaging.error, pages: catalogPaging.pages, uniqueCourses: catalogPaging.seen.length },
-                cacheKeys: Object.keys(courseApiCache).map(k => k.split('?')[0]),
+                cacheKeys: Object.keys(courseApiCache),
                 entries: courseEntriesFromCache().slice(0, 60),
                 scan: JSON.parse(JSON.stringify(lastCatalogScan))
             };
@@ -5437,7 +5458,9 @@
         const origSend = XMLHttpRequest.prototype.send;
         const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
         XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-            if (this.__sm) this.__sm.headers.append(name, value);
+            // Capture is best-effort — Headers.append throws on invalid names
+            // and must never propagate into the app's own request path.
+            try { if (this.__sm) this.__sm.headers.append(name, value); } catch (e) {}
             return origSetHeader.apply(this, arguments);
         };
         XMLHttpRequest.prototype.open = function(m, u) {
