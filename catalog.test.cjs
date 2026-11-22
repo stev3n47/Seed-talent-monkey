@@ -113,8 +113,13 @@ test('page bridge reuses fetch or XHR authentication without relaying headers', 
         assert.equal(sniff.entry.method, 'GET');
         assert.ok(sniff.entry.respBody);
         assert.equal(JSON.stringify(messages).includes('test-only'), false);
+        // A foreign-looking e.source must still be accepted — Tampermonkey's
+        // isolated world can report a different proxy than window. The origin
+        // check is the actual gate.
         const count = calls.length;
         await listeners[0]({ source: {}, origin: 'https://app.seedtalent.com', data: { type: 'SEED_CATALOG_PAGE', offset: 16 } });
-        assert.equal(calls.length, count);
+        assert.equal(calls.length, count + 1);
+        await listeners[0]({ source: window, origin: 'https://evil.example', data: { type: 'SEED_CATALOG_PAGE', offset: 24 } });
+        assert.equal(calls.length, count + 1);
     }
 });

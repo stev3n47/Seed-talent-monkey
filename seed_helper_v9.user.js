@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.75
+// @version       9.76
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.75';
+    const HELPER_VERSION = '9.76';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -5362,7 +5362,11 @@
             } catch (e) {}
         }
         window.addEventListener('message', async function(e) {
-            if (window !== window.top || e.source !== window || e.origin !== location.origin || !e.data || e.data.type !== 'SEED_CATALOG_PAGE') return;
+            // e.origin pins the sender to app.seedtalent.com; e.source identity
+            // is NOT reliable across the Tampermonkey isolated world boundary —
+            // comparing it to window drops real results (observed as a 20s
+            // "Catalog request timed out" while the fetch returned 200).
+            if (window !== window.top || e.origin !== location.origin || !e.data || e.data.type !== 'SEED_CATALOG_PAGE') return;
             const offset = e.data.offset;
             if (!Number.isInteger(offset) || offset < 0 || offset > 800) return;
             const result = { type: 'SEED_CATALOG_RESULT', offset: offset };
@@ -5510,7 +5514,7 @@
     // Relay page-context entries up to the top frame (only when enabled)
     window.addEventListener('message', (e) => {
         if (!e.data) return;
-        if (e.data.type === 'SEED_CATALOG_RESULT' && window === window.top && e.source === window && e.origin === location.origin) {
+        if (e.data.type === 'SEED_CATALOG_RESULT' && window === window.top && e.origin === location.origin) {
             acceptCatalogPage(e.data);
             return;
         }
