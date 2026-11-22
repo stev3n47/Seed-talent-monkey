@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.80
+// @version       9.81
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.80';
+    const HELPER_VERSION = '9.81';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -2119,9 +2119,8 @@
         try {
             for (const f of document.querySelectorAll('iframe')) {
                 if (incident.embeds.length >= 10) break;
-                if (!isRenderedForIncident(f)) continue;
-                const src = sanitizeIncidentUrl(f.getAttribute('src') || '');
-                if (!src) continue;
+                const src = sanitizeIncidentUrl(f.getAttribute('src') || f.getAttribute('data-src') || (f.dataset && f.dataset.src) || '');
+                if (!src) { incident.embeds.push({ src: 'iframe-no-src' }); continue; }
                 incident.embeds.push({ src });
             }
         } catch (e) {}
@@ -2538,8 +2537,9 @@
                     // every input disabled — leftover card DOM, not an active
                     // interaction (HASHBURY C5606: a submitted multi-response
                     // card was flagged unknown-quiz and killed the course).
-                    const qCard = submit.closest('.quiz-card, [data-block-id], [class*="quiz"], form, section, article') || submit.parentElement;
-                    const qInputs = qCard ? Array.from(qCard.querySelectorAll('input')) : [];
+                    // Page-scoped: the flagged SUBMIT can sit in a shared card
+                    // actions row outside the per-question input container.
+                    const qInputs = Array.from(document.querySelectorAll('[class*="quiz"] input, [data-quiz] input'));
                     const resolved = qInputs.length > 0 && qInputs.every(i => i.disabled);
                     if (!verdict && !resolved) { signals.unknownQuiz = true; detail['unknown-quiz'] = submit; }
                 }
@@ -3130,8 +3130,15 @@
     const embedPlayers = new WeakMap();
     function driveEmbeddedPlayers() {
         let active = false;
-        for (const fr of document.querySelectorAll('iframe[src]')) {
-            const src = String(fr.src || '');
+        for (const fr of document.querySelectorAll('iframe')) {
+            let src = String(fr.src || '');
+            const lazySrc = String(fr.getAttribute('data-src') || (fr.dataset && fr.dataset.src) || '');
+            if (!src && lazySrc &&
+                /youtube\.com\/embed|youtube-nocookie\.com\/embed|player\.vimeo\.com\/video|vimeo\.com\/video/i.test(lazySrc)) {
+                try { fr.src = lazySrc; src = lazySrc; } catch (e) {}
+                sendDebug('embed player: force-mounted lazy iframe');
+                return true;
+            }
             const kind = /youtube\.com\/embed|youtube-nocookie\.com\/embed/i.test(src) ? 'yt'
                 : /player\.vimeo\.com\/video|vimeo\.com\/video/i.test(src) ? 'vimeo' : '';
             if (!kind) continue;
@@ -4047,7 +4054,13 @@
                 mediaRetries[mediaId] = att + 1;
 
                 sendStatus(`Clicking Play button (attempt ${att + 1})...`, '#f9e2af', true);
-                setTimeout(() => simulateHumanClick(pb), 400);
+                setTimeout(() => {
+                    simulateHumanClick(pb);
+                    // Lazy players mount off a thumbnail/block-level handler —
+                    // clicking only the inner icon can miss it entirely.
+                    const wrap = pb.closest('[id^="block-"], [class*="embed"], figure, [class*="media"], [class*="video"]');
+                    if (wrap && wrap !== pb) simulateHumanClick(wrap);
+                }, 400);
                 nextActionTime = now + 2000;
                 stuckSince = 0;
                 return;
