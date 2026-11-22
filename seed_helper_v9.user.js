@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.79
+// @version       9.80
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -1264,6 +1264,17 @@
                 applyState('paused');
                 updateStatus(String(e.data.text || '✓ Quiz passed — course done, you can exit.').slice(0, 200), '#a6e3a1');
             }
+            if (e.data.type === 'SEED_RAFFLE_TERMINAL') {
+                // Giveaway lesson after a submitted entry has no Continue —
+                // the entry is the completion, not a stall.
+                if (queueActive()) {
+                    setQueue({ done: (queueState().done || 0) + 1 });
+                    queueReturn('Giveaway entered ✓ — moving on');
+                    return;
+                }
+                applyState('paused');
+                updateStatus('Giveaway entry submitted — nothing left on this course. You can exit.', '#a6e3a1');
+            }
         });
 
         // Rebuild a bounded incident object from an untrusted cross-frame payload.
@@ -1737,6 +1748,7 @@
     let raffleNeedProfile = false;
     let raffleSrc = '', raffleDeadline = 0;
     let raffleSubmitted = false, raffleFailSent = false, raffleDoneNotified = false;
+    let raffleDoneSince = 0, raffleDoneLastSeen = 0;   // sustained 'done' = terminal giveaway lesson
     let raffleProfNagAt = 0, raffleSubmitAt = 0, raffleSubmitTries = 0;
     const raffleFillCounts = {};
 
@@ -1942,6 +1954,8 @@
                 stuckSince = 0;
                 sendStatus('Raffle entry submitted — continuing…', '#a6e3a1', true);
             }
+            if (!raffleDoneSince) raffleDoneSince = now;
+            raffleDoneLastSeen = now;
             return 'done';
         }
         if (raffleFailHosts.has(host)) return false;
@@ -2520,7 +2534,14 @@
                     const verdict = Array.from(document.querySelectorAll(
                         '.quiz-card__feedback, [class*="feedback--active"], .quiz-card__feedback-label, .quiz-feedback, [class*="result-card"]'
                     )).find(el => isVisible(el) && /\b(correct|incorrect|passed|failed)\b/i.test(el.innerText || ''));
-                    if (!verdict) { signals.unknownQuiz = true; detail['unknown-quiz'] = submit; }
+                    // A resolved quiz keeps its SUBMIT button in the DOM with
+                    // every input disabled — leftover card DOM, not an active
+                    // interaction (HASHBURY C5606: a submitted multi-response
+                    // card was flagged unknown-quiz and killed the course).
+                    const qCard = submit.closest('.quiz-card, [data-block-id], [class*="quiz"], form, section, article') || submit.parentElement;
+                    const qInputs = qCard ? Array.from(qCard.querySelectorAll('input')) : [];
+                    const resolved = qInputs.length > 0 && qInputs.every(i => i.disabled);
+                    if (!verdict && !resolved) { signals.unknownQuiz = true; detail['unknown-quiz'] = submit; }
                 }
             } catch (e) {}
 
@@ -2614,6 +2635,7 @@
                                // read by reportUnknownIdle so incidents name
                                // the blocking filter, not just "idle".
     let stuckSince = 0;
+    let lastIdleStatusAt = 0, lastDelayDebugAt = 0;  // journal spam throttle
     const frameBornAt = Date.now();  // Rise lazy-mounts first content ~10-15s —
                                      // a 15s idle watchdog can fire before the
                                      // page renders; grace below covers that.
@@ -3098,6 +3120,62 @@
         return null;
     }
 
+    // -- Cross-origin video embed driver ----------------------------------
+    // YouTube/Vimeo players live in iframes the userscript can't enter; both
+    // expose postMessage command APIs (the YouTube one needs enablejsapi=1 on
+    // the src — armed by a one-time rewrite). Rise marks a video block
+    // complete from the player's own 'ended' event, so finishing the real
+    // video is what unlocks a media-gated Continue (Puffco/Wyld stalls: the
+    // play-overlay clicks hit the wrapper, never the player inside).
+    const embedPlayers = new WeakMap();
+    function driveEmbeddedPlayers() {
+        let active = false;
+        for (const fr of document.querySelectorAll('iframe[src]')) {
+            const src = String(fr.src || '');
+            const kind = /youtube\.com\/embed|youtube-nocookie\.com\/embed/i.test(src) ? 'yt'
+                : /player\.vimeo\.com\/video|vimeo\.com\/video/i.test(src) ? 'vimeo' : '';
+            if (!kind) continue;
+            let rec = embedPlayers.get(fr);
+            if (rec && rec.dead) continue;
+            if (!rec) {
+                rec = { kind, t0: Date.now(), sought: false, dead: false };
+                embedPlayers.set(fr, rec);
+                if (kind === 'yt' && !/enablejsapi=1/.test(src)) {
+                    try { fr.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 'enablejsapi=1'; } catch (e) {}
+                    sendDebug('embed player: arming YouTube jsapi');
+                    return true;
+                }
+                if (kind === 'vimeo' && !/api=1/.test(src)) {
+                    try { fr.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 'api=1'; } catch (e) {}
+                    sendDebug('embed player: arming Vimeo api');
+                    return true;
+                }
+            }
+            if (Date.now() - rec.t0 > 120000) { rec.dead = true; continue; }
+            const cw = fr.contentWindow;
+            if (!cw) continue;
+            try {
+                if (kind === 'yt') {
+                    cw.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
+                    if (!rec.sought && Date.now() - rec.t0 > 12000) {
+                        cw.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [999999, true] }), '*');
+                        rec.sought = true;
+                        sendDebug('embed player: seek-to-end (YouTube)');
+                    }
+                } else {
+                    cw.postMessage(JSON.stringify({ method: 'play' }), '*');
+                    if (!rec.sought && Date.now() - rec.t0 > 12000) {
+                        cw.postMessage(JSON.stringify({ method: 'setCurrentTime', value: 999999 }), '*');
+                        rec.sought = true;
+                        sendDebug('embed player: seek-to-end (Vimeo)');
+                    }
+                }
+            } catch (e) {}
+            active = true;
+        }
+        return active;
+    }
+
     // =========================================================
     // 7. MAIN LOOP
     // =========================================================
@@ -3145,7 +3223,10 @@
             // the same way the tick tail does.
             if (isSolving) stuckSince = 0;
             else if (!stuckSince) stuckSince = now;
-            sendDebug(isSolving ? 'Waiting for AI...' : `Delay ${Math.round((nextActionTime - now) / 1000)}s`);
+            if (now - lastDelayDebugAt >= 5000) {
+                lastDelayDebugAt = now;
+                sendDebug(isSolving ? 'Waiting for AI...' : `Delay ${Math.round((nextActionTime - now) / 1000)}s`);
+            }
             if (!isSolving && now - stuckSince >= 15000) reportUnknownIdle();
             return;
         }
@@ -3948,6 +4029,10 @@
                     return;
                 }
 
+            // Cross-origin player iframes (YouTube/Vimeo) — drive the real
+            // player via postMessage; overlay clicks can't reach inside.
+            if (driveEmbeddedPlayers()) { nextActionTime = now + 3000; stuckSince = 0; return; }
+
             // Play button with no <video> in its block — iframe/embed only.
             for (const pb of playBtns) {
                 const block = pb.closest('[id^="block-"]') || pb.parentElement;
@@ -4131,9 +4216,22 @@
             // ~10-15s+ to lazy-mount first content, so mount+15s skips healthy
             // courses (diag 1790342931282: C4418 incident at ~mount+16s).
             if (now - stuckSince >= 15000 && now - frameBornAt >= 30000) {
+                // A submitted raffle on a terminal giveaway lesson produces no
+                // Continue — the entry IS the completion (live batch: BOTANIST,
+                // Grow Sciences, Lost Farm all submitted ✓ then died unknown-idle).
+                if (raffleDoneSince && now - raffleDoneLastSeen < 3000) {
+                    try { window.top.postMessage({ type: 'SEED_RAFFLE_TERMINAL' }, '*'); } catch(e) {}
+                    raffleDoneSince = 0;
+                    stuckSince = now;
+                    return;
+                }
                 if (reportUnknownIdle()) return;
             }
-            sendStatus('Idle - nothing actionable found on this page.', '#bac2de', true);
+            // Once per 15s — the same line every second drowns the journal.
+            if (now - lastIdleStatusAt >= 15000) {
+                lastIdleStatusAt = now;
+                sendStatus('Idle - nothing actionable found on this page.', '#bac2de', true);
+            }
         }
     }
 
