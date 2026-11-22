@@ -11,6 +11,18 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const safeName = s => String(s || 'unknown').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40) || 'unknown';
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const JOURNAL = path.join(OUT, 'journal.log');
+const JOURNAL_MAX = 8 * 1024 * 1024;
+
+function appendJournal(body) {
+    try {
+        if (fs.existsSync(JOURNAL) && fs.statSync(JOURNAL).size > JOURNAL_MAX) {
+            fs.renameSync(JOURNAL, path.join(OUT, `journal_${stamp()}.log`));
+        }
+    } catch (e) {}
+    fs.appendFileSync(JOURNAL, `[${new Date().toISOString()}] ${body}\n`);
+    return JOURNAL;
+}
 
 function save(kind, body) {
     let type = kind;
@@ -24,7 +36,7 @@ function latest() {
     const files = fs.readdirSync(OUT).filter(f => f.endsWith('.json') || f.endsWith('.log'))
         .map(f => ({ f, t: fs.statSync(path.join(OUT, f)).mtimeMs })).sort((a, b) => b.t - a.t);
     const pick = p => { const h = files.find(x => x.f.startsWith(p)); return h ? h.f : null; };
-    return { incident: pick('seed_incident'), diag: pick('seed_diag'), sniff: pick('seed_sniff'), any: files[0] && files[0].f };
+    return { incident: pick('seed_incident'), diag: pick('seed_diag'), sniff: pick('seed_sniff'), journal: pick('journal'), any: files[0] && files[0].f };
 }
 
 const server = http.createServer((req, res) => {
@@ -45,8 +57,7 @@ const server = http.createServer((req, res) => {
         req.on('end', () => {
             let file = null;
             if (req.url === '/log') {
-                file = path.join(OUT, 'journal.log');
-                fs.appendFileSync(file, `[${new Date().toISOString()}] ${body}\n`);
+                file = appendJournal(body);
             } else if (req.url === '/incident' || req.url === '/diag' || req.url === '/sniff') {
                 file = save(req.url.slice(1), body);
             }

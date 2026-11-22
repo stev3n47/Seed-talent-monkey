@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.78
+// @version       9.79
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.78';
+    const HELPER_VERSION = '9.79';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -427,6 +427,7 @@
         queueDetailSince = 0;
         setQueue({ tried, current: null });
         sendStatus((reason || 'Back to catalog') + ' — queue continues.', '#a6e3a1');
+        autoDiag('queueReturn: ' + (reason || 'unspecified'));
         setTimeout(() => { try { location.assign('https://app.seedtalent.com/courses'); } catch(e) { location.href = 'https://app.seedtalent.com/courses'; } }, 2500);
     }
 
@@ -1449,7 +1450,7 @@
         journalPush('status', t);
         try { window.top.postMessage({ type: 'SEED_STATUS', text: t, color: c, hideMatches: !!hm }, '*'); } catch(e) {}
         try {
-            GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/log", data: "[STATUS] " + t, headers: { "Content-Type": "text/plain" } });
+            GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8766/log", data: "[STATUS] " + t, headers: { "Content-Type": "text/plain" } });
         } catch(err) {}
     }
     function sendDebug(t) {
@@ -1457,7 +1458,7 @@
         try { window.top.postMessage({ type: 'SEED_DEBUG', text: String(t).slice(0, 200) }, '*'); } catch(e) {}
         console.log('[SH v9.0]', t);
         try {
-            GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8765/log", data: "[DEBUG] " + t, headers: { "Content-Type": "text/plain" } });
+            GM_xmlhttpRequest({ method: "POST", url: "http://127.0.0.1:8766/log", data: "[DEBUG] " + t, headers: { "Content-Type": "text/plain" } });
         } catch(err) {}
     }
     function sendMatches(t) {
@@ -2423,6 +2424,45 @@
         return { live, historical };
     }
 
+    // ── Auto-capture: POST a compact evidence bundle to the local capture
+    // listener (capture_server.js → captures/) on every queue transition, so
+    // debugging never depends on a manual DIAG download. Silent no-op when
+    // the listener isn't running.
+    let lastAutoDiag = 0;
+    function autoDiag(reason) {
+        if (window !== window.top) return;
+        const now = Date.now();
+        if (now - lastAutoDiag < 15000) return;
+        lastAutoDiag = now;
+        try {
+            const journal = mergedJournal();
+            const bundle = collectDiags(now);
+            const q = queueState();
+            GM_xmlhttpRequest({
+                method: 'POST', url: 'http://127.0.0.1:8766/diag',
+                data: JSON.stringify({
+                    auto: true, reason: String(reason || '').slice(0, 140),
+                    meta: {
+                        helperVersion: HELPER_VERSION,
+                        dumpedAt: new Date(now).toISOString(),
+                        journalEntries: journal.length,
+                        queue: { active: !!q.active, done: q.done || 0, tried: Object.keys(q.tried || {}).length },
+                        catalog: {
+                            offset: catalogPaging.offset, pages: catalogPaging.pages,
+                            uniqueCourses: catalogPaging.seen.length,
+                            exhausted: catalogPaging.exhausted, error: catalogPaging.error
+                        }
+                    },
+                    recentNetwork: recentNetworkMeta.slice(-80),
+                    aiCalls: aiCallLog.slice(-40),
+                    journal: journal.slice(-250),
+                    diags: bundle.live, historicalDiags: bundle.historical
+                }),
+                headers: { 'Content-Type': 'application/json' }
+            });
+        } catch (e) {}
+    }
+
     function isTerminalNavLabel(cleanText) {
         return ['EXIT', 'EXIT COURSE', 'FINISH', 'COMPLETE'].includes(cleanText);
     }
@@ -3132,6 +3172,7 @@
                 setQueue({ active: false });
                 state = 'paused';
                 sendStatus('Queue paused — catalog scan incomplete: ' + catalogPaging.error, '#f38ba8');
+                autoDiag('catalog-error: ' + catalogPaging.error);
                 return;
             }
             const next = pickNextCourse(q);
@@ -3187,6 +3228,7 @@
             if (sc.apiSamples && sc.apiSamples.length) sendDebug('catalog api: ' + JSON.stringify(sc.apiSamples).slice(0, 320));
             if (sc.rejected && sc.rejected.length) sendDebug('catalog rejected: ' + sc.rejected.join(' | ').slice(0, 320));
             sendStatus('Queue complete — ' + (q.done || 0) + ' done' + (skipped ? ', ' + skipped + ' skipped (see captures)' : '') + '.', '#a6e3a1');
+            autoDiag('queue-complete: ' + (q.done || 0) + ' done, ' + skipped + ' skipped');
             return;
         }
 
