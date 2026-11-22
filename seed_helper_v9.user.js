@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.77
+// @version       9.78
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -17,12 +17,13 @@
 // @grant        GM_getValue
 // @grant        GM_listValues
 // @grant        GM_deleteValue
+// @grant        GM_download
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.77';
+    const HELPER_VERSION = '9.78';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -1002,7 +1003,17 @@
             updateStatus(sniffOn ? 'Sniffing network traffic…' : 'Sniffer off.', '#89dceb');
         });
         const downloadJson = (name, obj) => {
-            const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+            const text = JSON.stringify(obj, null, 2);
+            // GM_download runs extension-side, so it is NOT subject to the
+            // site's "automatic downloads" permission — anchor downloads get
+            // silently blocked after the site is flagged for a download flood.
+            try {
+                if (typeof GM_download === 'function') {
+                    GM_download({ url: 'data:application/json;charset=utf-8,' + encodeURIComponent(text), name: name });
+                    return;
+                }
+            } catch (e) {}
+            const blob = new Blob([text], { type: 'application/json' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = name;
