@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.74
+// @version       9.75
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -22,7 +22,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.74';
+    const HELPER_VERSION = '9.75';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -181,10 +181,54 @@
     //                  canStartCourse,userTestResults:[{progress,status}]}]}]
     //   outstanding → {"items":[]} — NOT the incomplete list, ignore it.
     const courseApiCache = {};
+    const catalogPaging = { offset: 0, pending: false, exhausted: false, error: '', pages: 0, seen: [], requestedAt: 0 };
+    function courseIsComplete(c) {
+        const status = String(c.status || '').trim();
+        return status ? /^(completed|passed)$/i.test(status) : Number(c.progress) >= 100;
+    }
+    function catalogPageIds(body) {
+        const groups = JSON.parse(body);
+        if (!Array.isArray(groups) || groups.some(g => !g || !Array.isArray(g.courses))) throw new Error('Unrecognized catalog response');
+        const courses = groups.flatMap(g => g.courses);
+        if (courses.some(c => !c || typeof c.id !== 'string' || !COURSE_UUID.test(c.id))) throw new Error('Unrecognized catalog course ID');
+        return courses.map(c => c.id);
+    }
+    function acceptCatalogPage(data) {
+        if (!catalogPaging.pending || data.offset !== catalogPaging.offset) return;
+        catalogPaging.pending = false;
+        if (data.error) { catalogPaging.error = data.error; return; }
+        try {
+            const ids = catalogPageIds(data.body);
+            catalogPaging.pages++;
+            if (data.offset === 0) {
+                for (const key of Object.keys(courseApiCache)) if (key.startsWith('by-category')) delete courseApiCache[key];
+            }
+            if (!ids.length) { catalogPaging.exhausted = true; return; }
+            if (ids.every(id => catalogPaging.seen.includes(id))) throw new Error('Catalog pagination repeated a page');
+            catalogPaging.seen = [...new Set(catalogPaging.seen.concat(ids))];
+            courseApiCache['by-category?offset=' + data.offset + '&limit=8'] = data.body;
+            catalogPaging.offset += 8;
+            if (catalogPaging.pages >= 100) catalogPaging.error = 'Catalog page safety limit reached';
+        } catch (e) { catalogPaging.error = e.message; }
+    }
+    function requestCatalogPage(now) {
+        if (catalogPaging.pending && now - catalogPaging.requestedAt > 20000) {
+            catalogPaging.pending = false;
+            catalogPaging.error = 'Catalog request timed out';
+        }
+        if (catalogPaging.error || catalogPaging.exhausted) return false;
+        if (!catalogPaging.pending) {
+            catalogPaging.pending = true;
+            catalogPaging.requestedAt = now;
+            window.postMessage({ type: 'SEED_CATALOG_PAGE', offset: catalogPaging.offset }, location.origin);
+        }
+        return true;
+    }
     const COURSE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     function courseEntriesFromCache() {
         const out = [], seen = new Set();
         for (const key of Object.keys(courseApiCache)) {
+            if (!key.startsWith('by-category')) continue;
             let json;
             try { json = JSON.parse(courseApiCache[key]); } catch(e) { continue; }
             (function walk(n) {
@@ -276,7 +320,7 @@
         for (const relaxed of [false, true]) {
             for (const c of entries) {
                 if (tried[c.id]) { scan.triedSkip++; continue; }
-                if (c.progress >= 100 || /completed/i.test(c.status)) { scan.doneSkip++; continue; }
+                if (courseIsComplete(c)) { scan.doneSkip++; continue; }
                 if (!relaxed && !c.canStart) { scan.lockedSkip++; continue; }
                 const a = document.querySelector('a[href*="/course/' + c.id + '"]');
                 return { id: c.id, href: '/course/' + c.id, label: c.name || c.id.slice(0, 8), anchor: a };
@@ -707,6 +751,7 @@
         // Shared by QUEUE and by START on the catalog: arm the autopilot,
         // resume the engine, and make sure we're on the courses listing.
         function armQueue() {
+            Object.assign(catalogPaging, { offset: 0, pending: false, exhausted: false, error: '', pages: 0, seen: [], requestedAt: 0 });
             setQueue({ active: true, started: Date.now(), tried: {}, current: null, done: 0, pages: 0, reloaded: false, tabsTried: [], reveals: 0 });
             applyState('running');
             updateStatus('Queue armed — scanning catalog for outstanding courses.', '#b4befe');
@@ -2292,7 +2337,8 @@
         } catch (e) {}
         try {
             d.catalog = {
-                cacheKeys: Object.keys(courseApiCache),
+                paging: { offset: catalogPaging.offset, pending: catalogPaging.pending, exhausted: catalogPaging.exhausted, error: catalogPaging.error, pages: catalogPaging.pages, uniqueCourses: catalogPaging.seen.length },
+                cacheKeys: Object.keys(courseApiCache).map(k => k.split('?')[0]),
                 entries: courseEntriesFromCache().slice(0, 60),
                 scan: JSON.parse(JSON.stringify(lastCatalogScan))
             };
@@ -3045,6 +3091,17 @@
         // and invisible here — `state = 'paused'` is the in-scope equivalent.
         if (window === window.top && queueActive() && /seedtalent\.com$/.test(location.hostname) && /^\/courses/.test(location.pathname)) {
             const q = queueState();
+            if (requestCatalogPage(now)) {
+                sendStatus('Queue: requesting catalog offset ' + catalogPaging.offset + '…', '#f9e2af', true);
+                nextActionTime = now + 1000;
+                return;
+            }
+            if (catalogPaging.error) {
+                setQueue({ active: false });
+                state = 'paused';
+                sendStatus('Queue paused — catalog scan incomplete: ' + catalogPaging.error, '#f38ba8');
+                return;
+            }
             const next = pickNextCourse(q);
             if (next && next.reveal) {
                 // A hidden course panel was just opened — rescan next tick.
@@ -5295,6 +5352,49 @@
     // =========================================================
     function __seedSnifferPage() {
         const origFetch = window.fetch;
+        let catalogRequest = null;
+        function rememberCatalogRequest(url, method, headers, credentials) {
+            try {
+                const u = new URL(url, location.href);
+                if (u.origin === 'https://api.seedtalent.com' && u.pathname === '/api/v1/courses/by-category' && String(method).toUpperCase() === 'GET') {
+                    catalogRequest = { url: u.href, headers: new Headers(headers), credentials: credentials || 'same-origin' };
+                }
+            } catch (e) {}
+        }
+        window.addEventListener('message', async function(e) {
+            if (window !== window.top || e.source !== window || e.origin !== location.origin || !e.data || e.data.type !== 'SEED_CATALOG_PAGE') return;
+            const offset = e.data.offset;
+            if (!Number.isInteger(offset) || offset < 0 || offset > 800) return;
+            const result = { type: 'SEED_CATALOG_RESULT', offset: offset };
+            try {
+                if (!catalogRequest) throw new Error('Catalog request template unavailable');
+                const u = new URL(catalogRequest.url);
+                u.searchParams.set('offset', String(offset));
+                u.searchParams.set('limit', '8');
+                const controller = new AbortController();
+                const timer = setTimeout(function() { controller.abort(); }, 15000);
+                let response = null;
+                try {
+                    response = await origFetch.call(window, u.href, { method: 'GET', headers: catalogRequest.headers, credentials: catalogRequest.credentials, signal: controller.signal });
+                    if (!response.ok) throw new Error('Catalog HTTP ' + response.status);
+                    result.body = await response.text();
+                    if (result.body.length > 2000000) throw new Error('Catalog response exceeds safety limit');
+                } finally {
+                    clearTimeout(timer);
+                    // Synthesized requests bypass the wrapped fetch — record the
+                    // entry so DIAG's recentNetwork and SNIFF dumps include them.
+                    if (response) {
+                        try {
+                            window.postMessage({ type: 'SEED_SNIFF_ENTRY', entry: {
+                                frame: location.href, method: 'GET', url: u.href, status: response.status,
+                                reqBody: null, respBody: result.body ? String(result.body).slice(0, 200000) : null
+                            } }, '*');
+                        } catch (e2) {}
+                    }
+                }
+            } catch (err) { result.error = String(err.message || 'Catalog request failed'); delete result.body; }
+            window.postMessage(result, location.origin);
+        });
         window.fetch = async function() {
             const args = arguments;
             let url = '', method = 'GET', reqBody = null;
@@ -5307,6 +5407,12 @@
                     reqBody = await args[0].clone().text().catch(function(){ return null; });
                 }
             } catch(e) {}
+            if (String(method).toUpperCase() === 'GET' && /\/api\/v1\/courses\/by-category(?:\?|$)/.test(String(url))) {
+                try {
+                    const req = new Request(args[0], args[1]);
+                    rememberCatalogRequest(req.url, req.method, req.headers, req.credentials);
+                } catch (e) {}
+            }
             const resp = await origFetch.apply(this, args);
             try {
                 const clone = resp.clone();
@@ -5325,12 +5431,18 @@
         };
         const origOpen = XMLHttpRequest.prototype.open;
         const origSend = XMLHttpRequest.prototype.send;
+        const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            if (this.__sm) this.__sm.headers.append(name, value);
+            return origSetHeader.apply(this, arguments);
+        };
         XMLHttpRequest.prototype.open = function(m, u) {
-            this.__sm = { m: m, u: u };
+            this.__sm = { m: m, u: u, headers: new Headers() };
             return origOpen.apply(this, arguments);
         };
         XMLHttpRequest.prototype.send = function(b) {
             const meta = this.__sm, xhr = this;
+            if (meta) rememberCatalogRequest(meta.u, meta.m, meta.headers, xhr.withCredentials ? 'include' : 'same-origin');
             if (meta) xhr.addEventListener('loadend', function() {
                 try {
                     const cap = /\/api\/v1\/courses\//.test(String(meta.u)) ? 200000 : 40000;
@@ -5398,6 +5510,10 @@
     // Relay page-context entries up to the top frame (only when enabled)
     window.addEventListener('message', (e) => {
         if (!e.data) return;
+        if (e.data.type === 'SEED_CATALOG_RESULT' && window === window.top && e.source === window && e.origin === location.origin) {
+            acceptCatalogPage(e.data);
+            return;
+        }
         if (e.data.type === 'SEED_SNIFF_SET') {
             sniffOn = !!e.data.on;
             // Forward deeper so nested iframes get the toggle too
