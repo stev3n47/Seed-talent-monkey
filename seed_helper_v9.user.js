@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.79';
+    const HELPER_VERSION = '9.80';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
