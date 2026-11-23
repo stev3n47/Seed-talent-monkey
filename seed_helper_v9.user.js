@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Seed Talent Auto-Advancer & OpenRouter Solver
 // @namespace    http://tampermonkey.net/
-// @version       9.81
+// @version       9.82
 // @updateURL     https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @downloadURL   https://raw.githubusercontent.com/stev3n47/Seed-talent-monkey/main/seed_helper_v9.user.js
 // @description  Added network sniffer (SNIFF/DUMP) + hardened SCORM nuke: correct progress_measure, full frame-tree API walk, and cmi.objectives.N completion for per-section status. Detects unsupported adapters and auto-pauses. Terminal-navigation guard: never clicks Exit/Finish and pauses on course-exit/Bye pages. SCORM nuke uses current-frame discovery with retry. Sanitized incident capture on stalls. OpenRouter key stored locally via KEY button. Rise flashcard-grid support and bounded locked scroll. Current Rise process-carousel navigation: intra-block steppers routed to the interactive handler with single-fire clicks so no step is skipped. Quiz resilience: AI-solve failures now release the question for bounded retry (max 3) instead of stranding it in `attempted`; missing key pauses with a recoverable RESUME path. Passed-quiz results screens report completion and pause. SCORM-verified retries: cmi.interactions correct_responses are reused as ground-truth answers before asking the AI. Single/multi-select classification now reads real input types so single-choice can never multi-check.
@@ -23,7 +23,7 @@
 (function () {
     'use strict';
 
-    const HELPER_VERSION = '9.81';
+    const HELPER_VERSION = '9.82';
     const OPENROUTER_KEY_STORAGE = 'seed_openrouter_key';
     const PROFILE_KEY = 'seed_form_profile';
 
@@ -2876,7 +2876,7 @@
             return true;
         });
 
-        for (const submitBtn of submitBtns) {
+        for (let submitBtn of submitBtns) {
             // Rise keeps submitted cards mounted alongside the active one, and
             // the submit bar can sit outside the card — so a container found
             // via closest() can mix one card's title with another's options.
@@ -2894,7 +2894,7 @@
                 // "resolved" and silently starving the live submit every tick
                 // (Wildberry C4820 step-deck, incident 1790170308706).
                 const cardResolved = c => !!c.querySelector('.quiz-card__feedback, [class*="feedback--active"], .quiz-feedback');
-                const cardLive = c => !!c.querySelector('input[type="radio"]:not([disabled]), input[type="checkbox"]:not([disabled]), [class*="-option-wrap"], .quiz-card__interactive li, .quiz-card__interactive label');
+                const cardLive = c => !!c.querySelector('input[type="radio"]:not([disabled]), input[type="checkbox"]:not([disabled]), input.quiz-fill__input:not([disabled]), [class*="quiz-fill"] input:not([disabled]), [class*="-option-wrap"], .quiz-card__interactive li, .quiz-card__interactive label');
                 const nearestLiveCard = () => {
                     let best = null, bestD = Infinity;
                     const sr = submitBtn.getBoundingClientRect();
@@ -2922,6 +2922,17 @@
                 container = ownCard
                          || submitBtn.closest('.lesson-main, .page-wrap')
                          || document;
+            }
+
+            // If the bound container is a live card that doesn't own this
+            // submit, re-bind to that card's own SUBMIT — a resolved card's
+            // enabled leftover button otherwise eats every click while the
+            // live card's real submit never fires (HASHBURY C5606: resolved
+            // multi-response card shadowed the active fill-blank card).
+            if (container && !container.contains(submitBtn)) {
+                const inner = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+                    .find(b => (b.innerText || '').trim().toUpperCase() === 'SUBMIT' && !b.disabled);
+                if (inner) submitBtn = inner;
             }
 
         // Helper to check if an option is actually visually on screen (ignoring pointer-events)
@@ -3939,6 +3950,15 @@
         // -- PRIORITY E: Video (only if navigation is blocked) ---
         if (!hasUnlockedFwd) {
             const medias = Array.from(document.querySelectorAll('video, audio'));
+            // Custom players (ov-*, web components) can hide the real <video>
+            // inside an open shadow root — scanning only the top document made
+            // those lessons look like dead play overlays (Puffco C2044).
+            if (!medias.length) {
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.shadowRoot) medias.push(...el.shadowRoot.querySelectorAll('video, audio'));
+                    if (medias.length >= 8) break;
+                }
+            }
             const playBtns = Array.from(document.querySelectorAll('.vjs-big-play-button, button[aria-label="Play Video"], button[class*="play"], .plyr__control--overlaid, .ytp-large-play-button, [aria-label*="Play" i]')).filter(b => {
                 if (!isVisible(b)) return false;
                 // "Replay"/"Play again" is offered after a video ends — clicking
@@ -4026,7 +4046,10 @@
                                 if (stalled >= 60) { clearInterval(watchdog); m.__seedWd = false; sendDebug('video stalled — attempt exhausted'); return; }
                             } else stalled = 0;
                             lastT = m.currentTime;
-                            if (checks > 720) { clearInterval(watchdog); m.__seedWd = false; }
+                            // Seek-proof players must play through in real
+                            // time — cap by duration, not a flat 6min.
+                            const wdCap = (m.duration > 0 ? m.duration * 2 + 120 : 720);
+                            if (checks > wdCap) { clearInterval(watchdog); m.__seedWd = false; }
                         }, 500);
                         m.__seedWd = true;
                     }, 800);
